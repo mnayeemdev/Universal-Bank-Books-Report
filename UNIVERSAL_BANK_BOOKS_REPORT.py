@@ -1,5 +1,5 @@
 """
-UNIVERSAL BANK BOOKS REPORT V3
+UNIVERSAL BANK BOOKS REPORT V4
 ==============================
 
 FIX IN V3
@@ -20,7 +20,7 @@ Supported:
     .pdf
 
 Output:
-    UNIVERSAL_BANK_BOOKS_REPORT_V3.xlsx
+    UNIVERSAL_BANK_BOOKS_REPORT_V4.xlsx
 
 Main reports:
     COVER_REPORT
@@ -65,7 +65,7 @@ python -m pip install pytesseract pdf2image pillow
 
 RUN
 ---
-python UNIVERSAL_BANK_BOOKS_REPORT_V3.py
+python UNIVERSAL_BANK_BOOKS_REPORT_V4.py
 """
 
 import os
@@ -85,7 +85,7 @@ from openpyxl.utils import get_column_letter
 # ============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V3.xlsx")
+OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V4.xlsx")
 
 PATTERNS = (
     "*.xlsx", "*.XLSX",
@@ -694,11 +694,29 @@ MONEY_TOKEN_RE = re.compile(
 
 
 def is_icici_style_pdf_text(text_value):
+    """
+    Detect multiple ICICI statement generations/layouts.
+
+    Supported examples:
+    1) Tran Date | Value Date | Particulars | Location | Chq.No |
+       Withdrawals | Deposits | Balance (INR)
+
+    2) Date | Particulars | Chq.No. | Withdrawals | Deposits |
+       Autosweep | Reverse Sweep | Balance(INR)
+
+    We intentionally do NOT require Value Date because newer/alternate
+    ICICI exports may not have that column.
+    """
     t = clean_text(text_value).lower()
 
-    return (
+    has_date = (
         "tran date" in t
-        and "value date" in t
+        or "transaction date" in t
+        or re.search(r"\bdate\b", t) is not None
+    )
+
+    return (
+        has_date
         and "particulars" in t
         and "withdrawals" in t
         and "deposits" in t
@@ -708,14 +726,15 @@ def is_icici_style_pdf_text(text_value):
 
 def signed_balance_from_line(line):
     """
-    Return signed running balance:
-      Cr => positive
-      Dr => negative
-    """
-    if not re.search(r"\b(?:Cr|Dr)\b\s*$", line, flags=re.I):
-        return None
+    Return signed running balance.
 
-    # Remove date/date first so they are not mistaken for money tokens.
+    ICICI PDFs normally print:
+        1,23,456.78 Cr
+        499.99 Dr
+
+    Some statement versions omit Cr/Dr when the balance is exactly 0.00.
+    V4 accepts that zero-balance form too.
+    """
     stripped = re.sub(
         r"^\d{2}-\d{2}-\d{4}"
         r"(?:\s+\d{2}-\d{2}-\d{4})?\s*",
@@ -734,11 +753,16 @@ def signed_balance_from_line(line):
         return None
 
     if re.search(r"\bDr\b\s*$", line, flags=re.I):
-        bal = -abs(bal)
-    else:
-        bal = abs(bal)
+        return -abs(float(bal))
 
-    return float(bal)
+    if re.search(r"\bCr\b\s*$", line, flags=re.I):
+        return abs(float(bal))
+
+    # Some ICICI exports print zero balance without Cr/Dr.
+    if abs(float(bal)) <= 0.000001:
+        return 0.0
+
+    return None
 
 
 def transaction_amount_from_line(line):
@@ -870,6 +894,7 @@ def parse_icici_pdf(path):
                 balance_line = None
 
                 for bl in block_lines:
+                    # Normal Cr/Dr ending OR alternate ICICI zero-balance row.
                     if re.search(
                         r"\b(?:Cr|Dr)\b\s*$",
                         bl,
@@ -877,6 +902,23 @@ def parse_icici_pdf(path):
                     ):
                         balance_line = bl
                         break
+
+                    # Newer/current-account ICICI PDFs sometimes omit Cr/Dr
+                    # when final balance is exactly 0.00.
+                    if DATE_START_RE.match(bl):
+                        stripped_for_zero = re.sub(
+                            r"^\d{2}-\d{2}-\d{4}"
+                            r"(?:\s+\d{2}-\d{2}-\d{4})?\s*",
+                            "",
+                            bl
+                        )
+                        zero_nums = MONEY_TOKEN_RE.findall(stripped_for_zero)
+                        if (
+                            len(zero_nums) >= 2
+                            and abs(parse_number(zero_nums[-1])) <= 0.000001
+                        ):
+                            balance_line = bl
+                            break
 
                 if balance_line is None:
                     continue
@@ -1145,7 +1187,7 @@ source_map = []
 all_pdf_recon = []
 
 print("=" * 82)
-print("UNIVERSAL BANK BOOKS REPORT V3")
+print("UNIVERSAL BANK BOOKS REPORT V4")
 print("=" * 82)
 print("Folder:", BASE_DIR)
 print("Source files found:", len(input_files))
@@ -2296,8 +2338,8 @@ notes = [
         "Bank statement to supporting Books-of-Accounts transaction report."
     ],
     [
-        "V3 PDF Fix",
-        "ICICI-style PDF statements are parsed from transaction text rows because PDF table extraction may collapse an entire page into one multi-line row."
+        "V4 PDF Flexibility",
+        "ICICI-style PDFs are parsed from transaction text rows. V4 supports both Tran Date + Value Date statements and Date-only current-account statements with Autosweep/Reverse Sweep columns."
     ],
     [
         "Debit / Credit",
