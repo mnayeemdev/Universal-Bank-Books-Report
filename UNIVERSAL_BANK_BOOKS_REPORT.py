@@ -1,16 +1,41 @@
 """
-UNIVERSAL BANK BOOKS REPORT V2
+UNIVERSAL BANK BOOKS REPORT V3
 ==============================
 
-Drop this script into a folder with one or more bank statements and run it.
+FIX IN V3
+---------
+Some bank PDFs (especially ICICI statements) look like normal tables on screen,
+but PDF table extraction returns ONE giant multi-line row per page. That caused
+older versions to report only 1 transaction per page and incorrect debit/credit
+totals.
 
-Supported inputs:
-    .xlsx / .xls / .csv / .pdf
+V3 detects that statement layout and parses transaction lines from PDF text,
+then determines Debit/Credit from the running balance movement. It also checks
+each page against the bank's printed page totals where available.
+
+Supported:
+    .xlsx
+    .xls
+    .csv
+    .pdf
 
 Output:
-    UNIVERSAL_BANK_BOOKS_REPORT.xlsx
+    UNIVERSAL_BANK_BOOKS_REPORT_V3.xlsx
 
-Target transaction format:
+Main reports:
+    COVER_REPORT
+    TRANSACTION_REGISTER
+    DATE_WISE_SUMMARY
+    MONTH_WISE_SUMMARY
+    CUSTOMER_WISE_SUMMARY
+    CUSTOMER_DATE_WISE
+    UTR_WISE_REGISTER
+    PDF_PAGE_RECON
+    CONTROL_TOTALS
+    SOURCE_MAPPING
+    REPORT_NOTES
+
+Core transaction fields:
     Date
     Customer / Counterparty Name
     UTR / Reference Number
@@ -19,38 +44,28 @@ Target transaction format:
     Credit
     Balance
     Source File
-
-Reports:
-    COVER_REPORT
-    TRANSACTION_REGISTER
-    DATE_WISE_SUMMARY
-    MONTH_WISE_SUMMARY
-    CUSTOMER_WISE_SUMMARY
-    CUSTOMER_DATE_WISE
-    UTR_WISE_REGISTER
-    CONTROL_TOTALS
-    SOURCE_MAPPING
-    REPORT_NOTES
+    Source Page / Sheet
 
 DATA INTEGRITY
 --------------
 - No transaction is invented.
-- No missing customer name or UTR is manufactured.
-- If a bank has a separate customer / beneficiary / payer / payee field,
-  that source value is used.
-- If customer or UTR exists only in narration, the script attempts a
-  best-effort extraction and records its source.
-- Possible duplicates are flagged, never deleted automatically.
-- Searchable/text PDFs work best.
-- Scanned/image-only PDFs need OCR dependencies and should be manually verified.
+- No missing name, UTR, debit, or credit value is manufactured.
+- Customer/UTR extraction from narration is best-effort and explicitly marked.
+- Possible duplicates are flagged, never deleted.
+- ICICI-style PDF page totals are used as a control check.
+- Searchable/text PDFs are strongly preferred.
+- Image-only/scanned PDFs may need OCR and manual verification.
 
-Install:
-    python -m pip install pandas openpyxl xlrd pdfplumber
+INSTALL
+-------
+python -m pip install pandas openpyxl xlrd pdfplumber
 
-Optional for scanned PDFs:
-    python -m pip install pytesseract pdf2image pillow
+Optional OCR:
+python -m pip install pytesseract pdf2image pillow
 
-Windows scanned-PDF OCR additionally needs Tesseract OCR and Poppler installed.
+RUN
+---
+python UNIVERSAL_BANK_BOOKS_REPORT_V3.py
 """
 
 import os
@@ -70,7 +85,7 @@ from openpyxl.utils import get_column_letter
 # ============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT.xlsx")
+OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V3.xlsx")
 
 PATTERNS = (
     "*.xlsx", "*.XLSX",
@@ -79,29 +94,30 @@ PATTERNS = (
     "*.pdf", "*.PDF",
 )
 
-files = []
+input_files = []
 for pattern in PATTERNS:
-    files.extend(glob.glob(os.path.join(BASE_DIR, pattern)))
+    input_files.extend(glob.glob(os.path.join(BASE_DIR, pattern)))
 
-files = sorted({
-    p for p in files
+input_files = sorted({
+    p for p in input_files
     if os.path.abspath(p).lower() != os.path.abspath(OUTPUT_FILE).lower()
     and not os.path.basename(p).startswith("~$")
 })
 
-if not files:
+if not input_files:
     raise FileNotFoundError(
-        "No XLSX/XLS/CSV/PDF bank statement found in:\n" + BASE_DIR
+        "No XLSX/XLS/CSV/PDF statement found in:\n" + BASE_DIR
     )
 
 
 # ============================================================
-# FORMAT
+# EXCEL STYLE
 # ============================================================
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 SUB_FILL = PatternFill("solid", fgColor="D9EAF7")
 WARN_FILL = PatternFill("solid", fgColor="FCE4D6")
+OK_FILL = PatternFill("solid", fgColor="E2F0D9")
 
 WHITE_BOLD = Font(color="FFFFFF", bold=True)
 BOLD = Font(bold=True)
@@ -109,35 +125,38 @@ BOLD = Font(bold=True)
 THIN = Side(style="thin", color="D9D9D9")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-MONEY = '₹#,##0.00;[Red](₹#,##0.00);-'
+MONEY_FMT = '₹#,##0.00;[Red](₹#,##0.00);-'
 DATE_FMT = 'dd-mm-yyyy'
 COUNT_FMT = '#,##0'
 
 
 # ============================================================
-# ALIASES
+# GENERIC BANK HEADER ALIASES
 # ============================================================
 
 ALIASES = {
     "date": [
-        "date", "txn date", "transaction date", "tran date", "trn date",
+        "date", "tran date", "transaction date", "txn date", "trn date",
         "posting date", "value date", "date of transaction"
     ],
     "narration": [
-        "narration", "particulars", "trn particulars", "trn. particulars",
-        "transaction particulars", "description", "details", "remarks",
-        "transaction description", "transaction details"
+        "particulars", "narration", "description", "details",
+        "trn particulars", "trn. particulars", "transaction particulars",
+        "transaction description", "transaction details", "remarks"
     ],
     "debit": [
-        "debit", "debit amount", "debit amt", "withdrawal",
-        "withdrawal amount", "dr", "dr amount", "paid out"
+        "debit", "debit amount", "debit amt",
+        "withdrawal", "withdrawals", "withdrawal amount",
+        "dr", "dr amount", "paid out"
     ],
     "credit": [
-        "credit", "credit amount", "credit amt", "deposit",
-        "deposit amount", "cr", "cr amount", "paid in"
+        "credit", "credit amount", "credit amt",
+        "deposit", "deposits", "deposit amount",
+        "cr", "cr amount", "paid in"
     ],
     "balance": [
-        "balance", "closing balance", "running balance",
+        "balance", "balance inr", "balance (inr)",
+        "closing balance", "running balance",
         "available balance", "ledger balance"
     ],
     "customer": [
@@ -153,9 +172,7 @@ ALIASES = {
         "bank reference", "rrn", "txn id", "transaction id",
         "bank transaction id"
     ],
-    "amount": [
-        "amount", "transaction amount", "txn amount"
-    ],
+    "amount": ["amount", "transaction amount", "txn amount"],
     "type": [
         "type", "transaction type", "txn type",
         "dr cr", "cr dr", "debit credit", "credit debit"
@@ -164,34 +181,43 @@ ALIASES = {
 
 
 # ============================================================
-# HELPERS
+# BASIC HELPERS
 # ============================================================
 
-def text(v):
-    if v is None:
+def clean_text(value):
+    if value is None:
         return ""
-    if isinstance(v, float) and np.isnan(v):
+    if isinstance(value, float) and np.isnan(value):
         return ""
     return " ".join(
-        str(v).replace("\ufeff", "").replace("\n", " ").replace("\r", " ").strip().split()
+        str(value)
+        .replace("\ufeff", "")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .strip()
+        .split()
     )
 
 
-def norm(v):
-    return re.sub(r"[^a-z0-9]+", " ", text(v).lower()).strip()
+def norm(value):
+    return re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        clean_text(value).lower()
+    ).strip()
 
 
-def num(v):
-    if v is None:
+def parse_number(value):
+    if value is None:
         return np.nan
 
-    if isinstance(v, (int, float, np.integer, np.floating)):
+    if isinstance(value, (int, float, np.integer, np.floating)):
         try:
-            return float(v)
+            return float(value)
         except Exception:
             return np.nan
 
-    s = text(v)
+    s = clean_text(value)
     if not s:
         return np.nan
 
@@ -208,46 +234,43 @@ def num(v):
          .strip()
     )
 
-    # Remove common DR/CR suffixes.
     s = re.sub(r"\s*(DR|CR)\s*$", "", s, flags=re.I).strip()
 
     try:
-        value = float(s)
-        return -value if negative else value
+        x = float(s)
+        return -x if negative else x
     except Exception:
         return np.nan
 
 
-def matches(v, field):
-    n = norm(v)
-    if not n:
+def alias_match(value, field):
+    v = norm(value)
+    if not v:
         return False
 
     for alias in ALIASES[field]:
         a = norm(alias)
 
-        if n == a:
+        if v == a:
             return True
 
-        if len(a) >= 4 and (a in n or n in a):
+        if len(a) >= 4 and (a in v or v in a):
             return True
 
     return False
 
 
-def find_col(columns, field):
-    # Exact first.
-    lookup = {norm(c): c for c in columns}
+def find_column(columns, field):
+    exact = {norm(c): c for c in columns}
 
     for alias in ALIASES[field]:
         a = norm(alias)
-        if a in lookup:
-            return lookup[a]
+        if a in exact:
+            return exact[a]
 
-    # Flexible fallback.
-    for col in columns:
-        if matches(col, field):
-            return col
+    for c in columns:
+        if alias_match(c, field):
+            return c
 
     return None
 
@@ -256,29 +279,26 @@ def header_hits(values):
     hits = set()
 
     for field in ALIASES:
-        if any(matches(v, field) for v in values):
+        if any(alias_match(v, field) for v in values):
             hits.add(field)
 
     return hits
 
 
-def is_header(values):
+def is_generic_bank_header(values):
     hits = header_hits(values)
 
-    # Standard separate debit / credit statement.
     if "date" in hits and ("debit" in hits or "credit" in hits):
         return True
 
-    # Amount + DR/CR type statement.
     if "date" in hits and "amount" in hits and "type" in hits:
         return True
 
     return False
 
 
-def find_header(raw, max_rows=150):
+def locate_generic_header(raw, max_rows=150):
     limit = min(len(raw), max_rows)
-
     best_row = None
     best_score = -1
 
@@ -286,42 +306,48 @@ def find_header(raw, max_rows=150):
         vals = raw.iloc[i].tolist()
         hits = header_hits(vals)
 
-        if is_header(vals):
-            score = (
-                5 * ("date" in hits)
-                + 3 * ("debit" in hits)
-                + 3 * ("credit" in hits)
-                + 2 * ("narration" in hits)
-                + 2 * ("amount" in hits)
-                + 2 * ("type" in hits)
-                + 1 * ("balance" in hits)
-                + 1 * ("customer" in hits)
-                + 1 * ("utr" in hits)
-            )
+        if not is_generic_bank_header(vals):
+            continue
 
-            if score > best_score:
-                best_score = score
-                best_row = i
+        score = (
+            5 * ("date" in hits)
+            + 3 * ("debit" in hits)
+            + 3 * ("credit" in hits)
+            + 2 * ("narration" in hits)
+            + 2 * ("amount" in hits)
+            + 2 * ("type" in hits)
+            + 1 * ("balance" in hits)
+            + 1 * ("customer" in hits)
+            + 1 * ("utr" in hits)
+        )
+
+        if score > best_score:
+            best_score = score
+            best_row = i
 
     return best_row
 
 
-def make_table(raw, header_row):
-    headers = [text(x) for x in raw.iloc[header_row].tolist()]
+def dataframe_from_header(raw, header_row):
+    headers = [clean_text(x) for x in raw.iloc[header_row].tolist()]
 
-    safe = []
+    safe_headers = []
     used = {}
 
     for i, h in enumerate(headers):
         base = h or f"Column_{i+1}"
         used[base] = used.get(base, 0) + 1
-        safe.append(base if used[base] == 1 else f"{base}_{used[base]}")
+
+        if used[base] == 1:
+            safe_headers.append(base)
+        else:
+            safe_headers.append(f"{base}_{used[base]}")
 
     data = raw.iloc[header_row + 1:].copy()
-    data.columns = safe
+    data.columns = safe_headers
 
     blank = data.apply(
-        lambda r: all(text(x) == "" for x in r.tolist()),
+        lambda row: all(clean_text(v) == "" for v in row.tolist()),
         axis=1
     )
 
@@ -329,66 +355,148 @@ def make_table(raw, header_row):
 
 
 # ============================================================
-# BEST-EFFORT UTR / NAME EXTRACTION
+# CUSTOMER / UTR EXTRACTORS
 # ============================================================
 
-def utr_from_narration(v):
-    s = text(v)
+LOCATION_WORDS = [
+    "KILAKARAI",
+    "BANGALORE - DOMLUR",
+    "RPC MUMBAI",
+    "RPC-NASIK",
+    "CHENNAI RPC",
+    "RPC JODHPUR",
+    "RPC-CHH. SAMBHAJINAGAR",
+]
 
-    if not s:
-        return ""
 
-    patterns = [
-        r"(?:UTR)[\s:/-]*([A-Z0-9]{8,35})",
-        r"(?:RRN)[\s:/-]*([0-9]{8,25})",
-        r"/XUTR/([^/\s]+)",
-        r"(?:REF(?:ERENCE)?)[\s:/-]*([A-Z0-9]{8,35})",
+def clean_customer_name(value):
+    s = clean_text(value).strip(" -/")
+
+    for loc in LOCATION_WORDS:
+        s = re.sub(
+            r"\b" + re.escape(loc) + r"\b.*$",
+            "",
+            s,
+            flags=re.I
+        ).strip(" -/")
+
+    return s[:120]
+
+
+def is_plain_customer_line(line):
+    s = clean_text(line)
+
+    if not s or len(s) > 90:
+        return False
+
+    reject_starts = [
+        "total", "page ", "cont", "sr245",
+        "this is an authenticated",
+        "tran date", "your details",
+        "your base branch", "summary of accounts",
+        "statement of transactions", "regd address",
+        "legend for transactions", "sincerely",
+        "team icici", "cin :", "corporate office",
     ]
 
-    for p in patterns:
-        m = re.search(p, s, flags=re.I)
+    if any(s.lower().startswith(x) for x in reject_starts):
+        return False
+
+    if "/" in s or ":" in s:
+        return False
+
+    # Reject digit-heavy continuation/reference lines.
+    digits = sum(ch.isdigit() for ch in s)
+    letters = sum(ch.isalpha() for ch in s)
+
+    if digits >= 3:
+        return False
+
+    return letters >= 4 and letters / max(len(s), 1) >= 0.50
+
+
+def extract_reference_from_text(block):
+    s = clean_text(block)
+
+    patterns = [
+        r"\bUPI/([0-9]{8,20})",
+        r"\bMMT/IMPS/([0-9]{8,20})",
+        r"\bINF/(?:NEFT|INFT)/([0-9]{8,20})",
+        r"\bBIL/INFT/([0-9]{8,20})",
+        r"\bNEFT-([A-Z0-9]{8,35})",
+        r"\bRTGS-([A-Z0-9]{8,40})",
+        r"\bRTGS/([A-Z0-9]{8,40})",
+        r"\bTRF/[^/]+/([0-9]{3,20})",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, s, flags=re.I)
         if m:
-            return text(m.group(1))
+            return clean_text(m.group(1))
 
     return ""
 
 
-def customer_from_narration(v):
-    s = text(v)
+def extract_customer_from_text(block, prefix_name=""):
+    if prefix_name:
+        return clean_customer_name(prefix_name)
 
-    if not s:
-        return ""
+    s = clean_text(block)
 
-    parts = [p.strip() for p in s.split("/") if p.strip()]
+    patterns = [
+        # INF/NEFT/REF/IFSC/Name
+        r"INF/NEFT/\d+/[A-Z0-9]+/"
+        r"([A-Za-z][A-Za-z0-9 .&_-]{2,70}?)"
+        r"(?=\s+(?:KILAKARAI|RPC|CHENNAI|BANGALORE)|$)",
 
-    # NEFT//XUTR/UTR/PARTY/BANK
-    for i, p in enumerate(parts):
-        if p.upper() == "XUTR" and i + 2 < len(parts):
-            return text(parts[i + 2])
+        # RTGS/REF/IFSC/Name
+        r"RTGS/[A-Z0-9]+/[A-Z0-9]+/"
+        r"([A-Za-z][A-Za-z0-9 .&_-]{2,70}?)"
+        r"(?=\s+(?:KILAKARAI|RPC|CHENNAI|BANGALORE)|$)",
 
-    # UPI/NAME/REF...
-    if parts and parts[0].upper().startswith("UPI") and len(parts) >= 2:
-        candidate = text(parts[1])
-        if candidate and not candidate.isdigit():
-            return candidate
+        # IMPS/REF/Name/
+        r"MMT/IMPS/\d+/([^/]{2,70})/",
+
+        # BIL/INFT/ref/NA/ Name
+        r"BIL/INFT/\d+/(?:NA|MIB-)/\s*"
+        r"([A-Za-z][A-Za-z .&_-]{2,70}?)"
+        r"(?=\s+(?:KILAKARAI|RPC|CHENNAI|BANGALORE)|$)",
+
+        # NEFT-Nxxx-NAME
+        r"NEFT-[A-Z0-9]+-"
+        r"([A-Za-z][A-Za-z0-9 .&_-]{2,90}?)"
+        r"(?=\s+(?:RPC|KILAKARAI|CHENNAI|BANGALORE)|-SP\d|$)",
+
+        # /NA/ NAME general
+        r"/NA/\s*"
+        r"([A-Za-z][A-Za-z .&_-]{2,70}?)"
+        r"(?=\s+(?:KILAKARAI|RPC|CHENNAI|BANGALORE)|$)",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, s, flags=re.I)
+        if m:
+            name = clean_customer_name(m.group(1))
+            if name:
+                return name
 
     return ""
 
 
 # ============================================================
-# STANDARDIZE
+# GENERIC TABULAR STANDARDIZER
 # ============================================================
 
-def standardize(table):
-    date_col = find_col(table.columns, "date")
-    narr_col = find_col(table.columns, "narration")
-    debit_col = find_col(table.columns, "debit")
-    credit_col = find_col(table.columns, "credit")
-    bal_col = find_col(table.columns, "balance")
-    cust_col = find_col(table.columns, "customer")
-    utr_col = find_col(table.columns, "utr")
-    amount_col = find_col(table.columns, "amount")
-    type_col = find_col(table.columns, "type")
+def standardize_generic_table(table):
+    date_col = find_column(table.columns, "date")
+    narration_col = find_column(table.columns, "narration")
+    debit_col = find_column(table.columns, "debit")
+    credit_col = find_column(table.columns, "credit")
+    balance_col = find_column(table.columns, "balance")
+    customer_col = find_column(table.columns, "customer")
+    utr_col = find_column(table.columns, "utr")
+    amount_col = find_column(table.columns, "amount")
+    type_col = find_column(table.columns, "type")
 
     if date_col is None:
         return pd.DataFrame()
@@ -401,52 +509,105 @@ def standardize(table):
         dayfirst=True
     ).dt.normalize()
 
-    out["Narration"] = table[narr_col] if narr_col else ""
-    out["Customer Name"] = table[cust_col] if cust_col else ""
-    out["UTR / Reference"] = table[utr_col] if utr_col else ""
+    out["Narration"] = (
+        table[narration_col]
+        if narration_col
+        else ""
+    )
 
-    out["Debit"] = table[debit_col].apply(num) if debit_col else np.nan
-    out["Credit"] = table[credit_col].apply(num) if credit_col else np.nan
-    out["Balance"] = table[bal_col].apply(num) if bal_col else np.nan
+    out["Customer Name"] = (
+        table[customer_col]
+        if customer_col
+        else ""
+    )
 
-    # Fallback: Amount + Type
-    if debit_col is None and credit_col is None and amount_col and type_col:
-        amount = table[amount_col].apply(num)
+    out["UTR / Reference"] = (
+        table[utr_col]
+        if utr_col
+        else ""
+    )
+
+    out["Debit"] = (
+        table[debit_col].apply(parse_number)
+        if debit_col
+        else np.nan
+    )
+
+    out["Credit"] = (
+        table[credit_col].apply(parse_number)
+        if credit_col
+        else np.nan
+    )
+
+    out["Balance"] = (
+        table[balance_col].apply(parse_number)
+        if balance_col
+        else np.nan
+    )
+
+    # Amount + DR/CR type fallback.
+    if (
+        debit_col is None
+        and credit_col is None
+        and amount_col
+        and type_col
+    ):
+        amounts = table[amount_col].apply(parse_number)
         txn_type = table[type_col].astype(str).str.upper()
 
         out["Debit"] = np.where(
-            txn_type.str.contains(r"\bDR\b|DEBIT|WITHDRAW", regex=True, na=False),
-            amount,
+            txn_type.str.contains(
+                r"\bDR\b|DEBIT|WITHDRAW",
+                regex=True,
+                na=False
+            ),
+            amounts,
             np.nan
         )
 
         out["Credit"] = np.where(
-            txn_type.str.contains(r"\bCR\b|CREDIT|DEPOSIT", regex=True, na=False),
-            amount,
+            txn_type.str.contains(
+                r"\bCR\b|CREDIT|DEPOSIT",
+                regex=True,
+                na=False
+            ),
+            amounts,
             np.nan
         )
 
     customer_blank = (
-        out["Customer Name"].fillna("").astype(str).str.strip().eq("")
+        out["Customer Name"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .eq("")
     )
 
     out.loc[customer_blank, "Customer Name"] = out.loc[
         customer_blank, "Narration"
-    ].apply(customer_from_narration)
+    ].apply(lambda x: extract_customer_from_text(x, ""))
 
     utr_blank = (
-        out["UTR / Reference"].fillna("").astype(str).str.strip().eq("")
+        out["UTR / Reference"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .eq("")
     )
 
     out.loc[utr_blank, "UTR / Reference"] = out.loc[
         utr_blank, "Narration"
-    ].apply(utr_from_narration)
+    ].apply(extract_reference_from_text)
 
     out["Customer Source"] = np.where(
-        cust_col is not None,
+        customer_col is not None,
         "SOURCE COLUMN",
         np.where(
-            out["Customer Name"].fillna("").astype(str).str.strip().ne(""),
+            out["Customer Name"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .ne(""),
             "EXTRACTED FROM NARRATION",
             "NOT AVAILABLE"
         )
@@ -456,23 +617,26 @@ def standardize(table):
         utr_col is not None,
         "SOURCE COLUMN",
         np.where(
-            out["UTR / Reference"].fillna("").astype(str).str.strip().ne(""),
+            out["UTR / Reference"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .ne(""),
             "EXTRACTED FROM NARRATION",
             "NOT AVAILABLE"
         )
     )
 
-    # Actual transaction lines only.
     actual = out["Debit"].notna() | out["Credit"].notna()
 
     return out.loc[actual].copy()
 
 
 # ============================================================
-# INPUT READERS
+# EXCEL / CSV READER
 # ============================================================
 
-def read_tabular(path):
+def read_excel_csv(path):
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".csv":
@@ -497,7 +661,7 @@ def read_tabular(path):
     engine = "xlrd" if ext == ".xls" else "openpyxl"
     book = pd.ExcelFile(path, engine=engine)
 
-    result = []
+    outputs = []
 
     for sheet in book.sheet_names:
         try:
@@ -508,17 +672,379 @@ def read_tabular(path):
                 dtype=str,
                 keep_default_na=False
             )
-            result.append((sheet, raw))
+            outputs.append((sheet, raw))
         except Exception as e:
-            print(f"    Sheet skipped: {sheet}: {e}")
+            print(f"    WARNING sheet '{sheet}' skipped: {e}")
 
-    return result
+    return outputs
 
 
-def read_pdf_tables(path):
+# ============================================================
+# ICICI-STYLE PDF PARSER
+# ============================================================
+
+DATE_START_RE = re.compile(r"^(\d{2}-\d{2}-\d{4})\b")
+
+MONEY_TOKEN_RE = re.compile(
+    r"(?<![\w])"
+    r"(?:\d{1,3}(?:,\d{2,3})+|\d+)"
+    r"(?:\.\d{2})?"
+    r"(?![\w])"
+)
+
+
+def is_icici_style_pdf_text(text_value):
+    t = clean_text(text_value).lower()
+
+    return (
+        "tran date" in t
+        and "value date" in t
+        and "particulars" in t
+        and "withdrawals" in t
+        and "deposits" in t
+        and "balance" in t
+    )
+
+
+def signed_balance_from_line(line):
+    """
+    Return signed running balance:
+      Cr => positive
+      Dr => negative
+    """
+    if not re.search(r"\b(?:Cr|Dr)\b\s*$", line, flags=re.I):
+        return None
+
+    # Remove date/date first so they are not mistaken for money tokens.
+    stripped = re.sub(
+        r"^\d{2}-\d{2}-\d{4}"
+        r"(?:\s+\d{2}-\d{2}-\d{4})?\s*",
+        "",
+        line
+    )
+
+    nums = MONEY_TOKEN_RE.findall(stripped)
+
+    if not nums:
+        return None
+
+    bal = parse_number(nums[-1])
+
+    if pd.isna(bal):
+        return None
+
+    if re.search(r"\bDr\b\s*$", line, flags=re.I):
+        bal = -abs(bal)
+    else:
+        bal = abs(bal)
+
+    return float(bal)
+
+
+def transaction_amount_from_line(line):
+    """
+    In ICICI transaction lines the final two numeric values are normally:
+        transaction amount | running balance
+
+    B/F opening row has only the running balance.
+    """
+    stripped = re.sub(
+        r"^\d{2}-\d{2}-\d{4}"
+        r"(?:\s+\d{2}-\d{2}-\d{4})?\s*",
+        "",
+        line
+    )
+
+    nums = MONEY_TOKEN_RE.findall(stripped)
+
+    if "B/F" in line.upper() and len(nums) <= 1:
+        return None
+
+    if len(nums) < 2:
+        return None
+
+    amount = parse_number(nums[-2])
+
+    return None if pd.isna(amount) else abs(float(amount))
+
+
+def parse_icici_pdf(path):
+    """
+    Parse ICICI-style statement PDFs by transaction text rows instead of
+    pdfplumber table rows.
+
+    Why:
+    pdfplumber may collapse an entire page into:
+        header row
+        one giant multiline data row
+        total row
+    which makes a normal table parser think the page has only one transaction.
+
+    Debit/Credit is determined from actual running balance movement.
+    Printed page totals are used as a reconciliation control.
+    """
     import pdfplumber
 
-    result = []
+    transactions = []
+    page_recon = []
+
+    previous_signed_balance = None
+
+    with pdfplumber.open(path) as pdf:
+        for page_no, page in enumerate(pdf.pages, start=1):
+            page_text = page.extract_text(
+                x_tolerance=1,
+                y_tolerance=3
+            ) or ""
+
+            lines = [
+                line.strip()
+                for line in page_text.splitlines()
+                if line.strip()
+            ]
+
+            # Printed page totals:
+            # Total : Withdrawals Deposits Balance
+            total_match = re.search(
+                r"Total\s*:\s*"
+                r"([\d,]+\.\d{2})\s+"
+                r"([\d,]+\.\d{2})\s+"
+                r"([\d,]+\.\d{2})",
+                page_text
+            )
+
+            printed_debit = (
+                parse_number(total_match.group(1))
+                if total_match
+                else np.nan
+            )
+
+            printed_credit = (
+                parse_number(total_match.group(2))
+                if total_match
+                else np.nan
+            )
+
+            transaction_indexes = [
+                i
+                for i, line in enumerate(lines)
+                if DATE_START_RE.match(line)
+            ]
+
+            page_rows = []
+
+            for position, line_index in enumerate(transaction_indexes):
+                line = lines[line_index]
+
+                next_index = (
+                    transaction_indexes[position + 1]
+                    if position + 1 < len(transaction_indexes)
+                    else len(lines)
+                )
+
+                # Lines after current dated line and before next dated line.
+                block_lines = lines[line_index:next_index]
+
+                # Stop transaction block at printed total/footer.
+                cleaned_block_lines = []
+                for bl in block_lines:
+                    if bl.startswith("Total :"):
+                        break
+                    if bl.startswith("Page "):
+                        break
+                    cleaned_block_lines.append(bl)
+
+                block_lines = cleaned_block_lines
+
+                # Immediate plain-text line before a date is often the party name
+                # in ICICI PDFs (UPI/NEFT/Google/Fashnear/etc.).
+                prefix_name = ""
+
+                if line_index > 0:
+                    previous_line = lines[line_index - 1]
+
+                    if is_plain_customer_line(previous_line):
+                        prefix_name = previous_line
+
+                # Find the line that contains the running balance.
+                balance_line = None
+
+                for bl in block_lines:
+                    if re.search(
+                        r"\b(?:Cr|Dr)\b\s*$",
+                        bl,
+                        flags=re.I
+                    ):
+                        balance_line = bl
+                        break
+
+                if balance_line is None:
+                    continue
+
+                current_balance = signed_balance_from_line(balance_line)
+
+                if current_balance is None:
+                    continue
+
+                amount = transaction_amount_from_line(balance_line)
+
+                date_match = DATE_START_RE.match(line)
+                txn_date_text = date_match.group(1)
+
+                # B/F opening balance is a control row, not a transaction.
+                is_bf = "B/F" in line.upper()
+
+                # Create narration block.
+                block_for_parse = " ".join(
+                    ([prefix_name] if prefix_name else [])
+                    + block_lines
+                )
+
+                customer = extract_customer_from_text(
+                    block_for_parse,
+                    prefix_name
+                )
+
+                reference = extract_reference_from_text(block_for_parse)
+
+                debit = np.nan
+                credit = np.nan
+
+                if (
+                    not is_bf
+                    and amount is not None
+                    and previous_signed_balance is not None
+                ):
+                    balance_change = (
+                        current_balance
+                        - previous_signed_balance
+                    )
+
+                    # Strong control: balance movement should equal amount.
+                    tolerance = max(
+                        0.02,
+                        abs(amount) * 0.000001
+                    )
+
+                    if abs(abs(balance_change) - amount) <= tolerance:
+                        if balance_change < 0:
+                            debit = amount
+                        elif balance_change > 0:
+                            credit = amount
+                    else:
+                        # Still classify by actual balance direction, but mark
+                        # reconciliation status for review.
+                        if balance_change < 0:
+                            debit = amount
+                        elif balance_change > 0:
+                            credit = amount
+
+                # Update running balance including B/F.
+                previous_signed_balance = current_balance
+
+                if is_bf:
+                    continue
+
+                page_rows.append({
+                    "Date": pd.to_datetime(
+                        txn_date_text,
+                        errors="coerce",
+                        dayfirst=True
+                    ),
+                    "Customer Name": customer,
+                    "UTR / Reference": reference,
+                    "Narration": clean_text(
+                        " ".join(block_lines)
+                    ),
+                    "Debit": debit,
+                    "Credit": credit,
+                    "Balance": current_balance,
+                    "Customer Source": (
+                        "PDF NAME LINE / NARRATION"
+                        if customer
+                        else "NOT AVAILABLE"
+                    ),
+                    "UTR Source": (
+                        "PDF NARRATION"
+                        if reference
+                        else "NOT AVAILABLE"
+                    ),
+                    "Source Page": page_no,
+                    "Parser": "ICICI PDF TEXT + BALANCE RECON",
+                })
+
+            if page_rows:
+                page_df = pd.DataFrame(page_rows)
+
+                parsed_debit = float(
+                    page_df["Debit"]
+                    .fillna(0)
+                    .sum()
+                )
+
+                parsed_credit = float(
+                    page_df["Credit"]
+                    .fillna(0)
+                    .sum()
+                )
+            else:
+                parsed_debit = 0.0
+                parsed_credit = 0.0
+
+            debit_diff = (
+                parsed_debit - printed_debit
+                if pd.notna(printed_debit)
+                else np.nan
+            )
+
+            credit_diff = (
+                parsed_credit - printed_credit
+                if pd.notna(printed_credit)
+                else np.nan
+            )
+
+            if (
+                pd.notna(printed_debit)
+                and pd.notna(printed_credit)
+            ):
+                page_status = (
+                    "OK"
+                    if (
+                        abs(debit_diff) <= 0.02
+                        and abs(credit_diff) <= 0.02
+                    )
+                    else "CHECK"
+                )
+            else:
+                page_status = "NO PRINTED TOTAL"
+
+            page_recon.append({
+                "Page": page_no,
+                "Parsed Debit": parsed_debit,
+                "Printed Debit": printed_debit,
+                "Debit Difference": debit_diff,
+                "Parsed Credit": parsed_credit,
+                "Printed Credit": printed_credit,
+                "Credit Difference": credit_diff,
+                "Status": page_status,
+            })
+
+            transactions.extend(page_rows)
+
+    return (
+        pd.DataFrame(transactions),
+        pd.DataFrame(page_recon)
+    )
+
+
+# ============================================================
+# GENERIC PDF TABLE READER
+# ============================================================
+
+def extract_pdf_tables(path):
+    import pdfplumber
+
+    outputs = []
 
     with pdfplumber.open(path) as pdf:
         for page_no, page in enumerate(pdf.pages, start=1):
@@ -528,7 +1054,11 @@ def read_pdf_tables(path):
                 if not table:
                     continue
 
-                width = max(len(r or []) for r in table)
+                width = max(
+                    len(row or [])
+                    for row in table
+                )
+
                 rows = []
 
                 for row in table:
@@ -536,21 +1066,37 @@ def read_pdf_tables(path):
                     row += [""] * (width - len(row))
                     rows.append(row)
 
-                result.append(
-                    (
-                        f"PDF Page {page_no} Table {table_no}",
-                        pd.DataFrame(rows)
-                    )
-                )
+                outputs.append((
+                    f"PDF Page {page_no} Table {table_no}",
+                    pd.DataFrame(rows),
+                    page_no
+                ))
 
-    return result
+    return outputs
 
 
-def read_pdf_ocr_optional(path):
+def get_first_pdf_page_text(path):
+    import pdfplumber
+
+    with pdfplumber.open(path) as pdf:
+        if not pdf.pages:
+            return ""
+
+        return pdf.pages[0].extract_text(
+            x_tolerance=1,
+            y_tolerance=3
+        ) or ""
+
+
+# ============================================================
+# OPTIONAL OCR FALLBACK
+# ============================================================
+
+def ocr_pdf_optional(path):
     """
-    OCR fallback for image-only PDF.
-    Conservative: attempts OCR text-to-table only when the OCR output itself
-    has a recognizable tabular structure. It does not invent columns.
+    Conservative OCR fallback.
+    OCR text is NOT automatically turned into financial rows unless a
+    recognizable table/header is produced.
     """
     try:
         from pdf2image import convert_from_path
@@ -558,190 +1104,398 @@ def read_pdf_ocr_optional(path):
     except Exception:
         return []
 
-    result = []
-
     try:
         images = convert_from_path(path, dpi=300)
     except Exception:
         return []
 
+    outputs = []
+
     for page_no, image in enumerate(images, start=1):
         try:
-            data = pytesseract.image_to_data(
+            text_value = pytesseract.image_to_string(
                 image,
-                output_type=pytesseract.Output.DATAFRAME,
                 config="--psm 6"
             )
         except Exception:
             continue
 
-        if data is None or data.empty:
-            continue
-
-        data = data.dropna(subset=["text"]).copy()
-        data["text"] = data["text"].astype(str).str.strip()
-        data = data[data["text"] != ""]
-
-        # Rebuild physical text lines. This can help diagnostics but is not
-        # allowed to fabricate debit/credit column boundaries.
-        lines = (
-            data.groupby(["block_num", "par_num", "line_num"])["text"]
-            .apply(lambda s: " ".join(s))
-            .tolist()
-        )
+        lines = [
+            [x]
+            for x in text_value.splitlines()
+            if clean_text(x)
+        ]
 
         if lines:
-            result.append(
-                (
-                    f"OCR Page {page_no}",
-                    pd.DataFrame([[line] for line in lines])
-                )
-            )
+            outputs.append((
+                f"OCR Page {page_no}",
+                pd.DataFrame(lines),
+                page_no
+            ))
 
-    return result
+    return outputs
 
 
 # ============================================================
-# LOAD ALL FILES
+# LOAD SOURCES
 # ============================================================
 
 all_frames = []
-source_rows = []
+source_map = []
+all_pdf_recon = []
 
-print("=" * 80)
-print("UNIVERSAL BANK BOOKS REPORT V2")
-print("=" * 80)
+print("=" * 82)
+print("UNIVERSAL BANK BOOKS REPORT V3")
+print("=" * 82)
 print("Folder:", BASE_DIR)
-print("Source files found:", len(files))
+print("Source files found:", len(input_files))
 print("")
 
-for path in files:
+for path in input_files:
     base = os.path.basename(path)
     ext = os.path.splitext(path)[1].lower()
 
     print("Reading:", base)
 
+    # --------------------------------------------------------
+    # PDF
+    # --------------------------------------------------------
+    if ext == ".pdf":
+        try:
+            first_text = get_first_pdf_page_text(path)
+        except Exception as e:
+            print("  ERROR reading PDF:", e)
+
+            source_map.append({
+                "Source File": base,
+                "Source Part": "",
+                "Status": "READ ERROR",
+                "Transaction Count": 0,
+                "Note": str(e),
+            })
+            continue
+
+        # ICICI-style special parser.
+        if is_icici_style_pdf_text(first_text):
+            try:
+                pdf_tx, pdf_recon = parse_icici_pdf(path)
+            except Exception as e:
+                print("  ERROR in ICICI PDF parser:", e)
+
+                source_map.append({
+                    "Source File": base,
+                    "Source Part": "ICICI PDF",
+                    "Status": "PARSE ERROR",
+                    "Transaction Count": 0,
+                    "Note": str(e),
+                })
+                continue
+
+            if pdf_tx.empty:
+                source_map.append({
+                    "Source File": base,
+                    "Source Part": "ICICI PDF",
+                    "Status": "NO TRANSACTIONS",
+                    "Transaction Count": 0,
+                    "Note": "",
+                })
+                continue
+
+            pdf_tx["Source File"] = base
+            pdf_tx["Source Part"] = (
+                "Page "
+                + pdf_tx["Source Page"].astype(str)
+            )
+            pdf_tx["Source Row"] = ""
+
+            all_frames.append(pdf_tx)
+
+            pdf_recon["Source File"] = base
+            all_pdf_recon.append(pdf_recon)
+
+            bad_pages = int(
+                pdf_recon["Status"].eq("CHECK").sum()
+            )
+
+            source_map.append({
+                "Source File": base,
+                "Source Part": "ICICI PDF TEXT PARSER",
+                "Status": (
+                    "RECOGNIZED"
+                    if bad_pages == 0
+                    else "RECOGNIZED / RECON CHECK"
+                ),
+                "Transaction Count": len(pdf_tx),
+                "Note": (
+                    f"Page reconciliation issues: {bad_pages}"
+                ),
+            })
+
+            print(
+                f"  ICICI PDF parser: "
+                f"{len(pdf_tx):,} transaction(s)"
+            )
+            print(
+                f"  Debit total : "
+                f"{pdf_tx['Debit'].fillna(0).sum():,.2f}"
+            )
+            print(
+                f"  Credit total: "
+                f"{pdf_tx['Credit'].fillna(0).sum():,.2f}"
+            )
+            print(
+                f"  PDF page reconciliation CHECK pages: "
+                f"{bad_pages}"
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Generic PDF tables
+        # ----------------------------------------------------
+        try:
+            pdf_sources = extract_pdf_tables(path)
+        except Exception as e:
+            print("  ERROR extracting PDF tables:", e)
+            pdf_sources = []
+
+        if not pdf_sources:
+            pdf_sources = ocr_pdf_optional(path)
+
+        recognized_pdf = False
+
+        for source_name, raw, page_no in pdf_sources:
+            header_row = locate_generic_header(raw)
+
+            if header_row is None:
+                continue
+
+            table = dataframe_from_header(
+                raw,
+                header_row
+            )
+
+            tx = standardize_generic_table(table)
+
+            if tx.empty:
+                continue
+
+            tx["Source File"] = base
+            tx["Source Part"] = source_name
+            tx["Source Row"] = (
+                tx.index.to_series().astype(int)
+                + header_row
+                + 2
+            ).values
+            tx["Source Page"] = page_no
+            tx["Parser"] = "GENERIC PDF TABLE"
+
+            all_frames.append(tx)
+            recognized_pdf = True
+
+            source_map.append({
+                "Source File": base,
+                "Source Part": source_name,
+                "Status": "RECOGNIZED",
+                "Transaction Count": len(tx),
+                "Note": "",
+            })
+
+            print(
+                f"  {source_name}: "
+                f"{len(tx):,} transaction(s)"
+            )
+
+        if not recognized_pdf:
+            source_map.append({
+                "Source File": base,
+                "Source Part": "PDF",
+                "Status": "UNRECOGNIZED",
+                "Transaction Count": 0,
+                "Note": (
+                    "No reliable transaction table recognized. "
+                    "If image-only PDF, install OCR dependencies "
+                    "or export the bank statement as searchable PDF/Excel."
+                ),
+            })
+
+            print(
+                "  WARNING: no reliable transaction rows "
+                "recognized from PDF."
+            )
+
+        continue
+
+    # --------------------------------------------------------
+    # EXCEL / CSV
+    # --------------------------------------------------------
     try:
-        if ext == ".pdf":
-            sources = read_pdf_tables(path)
-
-            if not sources:
-                sources = read_pdf_ocr_optional(path)
-        else:
-            sources = read_tabular(path)
-
+        sources = read_excel_csv(path)
     except Exception as e:
         print("  ERROR:", e)
 
-        source_rows.append({
+        source_map.append({
             "Source File": base,
             "Source Part": "",
             "Status": "READ ERROR",
-            "Header Row": "",
             "Transaction Count": 0,
             "Note": str(e),
         })
 
         continue
 
-    if not sources:
-        source_rows.append({
-            "Source File": base,
-            "Source Part": "",
-            "Status": "NO TABLE FOUND",
-            "Header Row": "",
-            "Transaction Count": 0,
-            "Note": "PDF may be scanned/image-only or unsupported layout.",
-        })
-        print("  No usable table found.")
-        continue
+    recognized_file = False
 
     for source_name, raw in sources:
-        header = find_header(raw)
+        header_row = locate_generic_header(raw)
 
-        if header is None:
-            source_rows.append({
-                "Source File": base,
-                "Source Part": source_name,
-                "Status": "UNRECOGNIZED",
-                "Header Row": "",
-                "Transaction Count": 0,
-                "Note": "Could not identify Date + Debit/Credit or Date + Amount + DR/CR header.",
-            })
+        if header_row is None:
             continue
 
-        table = make_table(raw, header)
-        txns = standardize(table)
+        table = dataframe_from_header(
+            raw,
+            header_row
+        )
 
-        if txns.empty:
-            source_rows.append({
-                "Source File": base,
-                "Source Part": source_name,
-                "Status": "HEADER FOUND / NO TRANSACTIONS",
-                "Header Row": header + 1,
-                "Transaction Count": 0,
-                "Note": "",
-            })
+        tx = standardize_generic_table(table)
+
+        if tx.empty:
             continue
 
-        txns["Source File"] = base
-        txns["Source Part"] = source_name
-        txns["Source Row"] = (
-            txns.index.to_series().astype(int) + header + 2
+        tx["Source File"] = base
+        tx["Source Part"] = source_name
+        tx["Source Row"] = (
+            tx.index.to_series().astype(int)
+            + header_row
+            + 2
         ).values
+        tx["Source Page"] = ""
+        tx["Parser"] = "GENERIC EXCEL/CSV"
 
-        all_frames.append(txns)
+        all_frames.append(tx)
+        recognized_file = True
 
-        source_rows.append({
+        source_map.append({
             "Source File": base,
             "Source Part": source_name,
             "Status": "RECOGNIZED",
-            "Header Row": header + 1,
-            "Transaction Count": len(txns),
-            "Note": "",
+            "Transaction Count": len(tx),
+            "Note": f"Header row: {header_row + 1}",
         })
 
-        print(f"  {source_name}: {len(txns):,} transaction(s)")
+        print(
+            f"  {source_name}: "
+            f"{len(tx):,} transaction(s)"
+        )
+
+    if not recognized_file:
+        source_map.append({
+            "Source File": base,
+            "Source Part": "",
+            "Status": "UNRECOGNIZED",
+            "Transaction Count": 0,
+            "Note": (
+                "Expected Date + Debit/Credit, "
+                "or Date + Amount + DR/CR."
+            ),
+        })
 
 
 if not all_frames:
     raise ValueError(
-        "\nNo bank transaction rows were recognized.\n"
-        "Expected formats similar to:\n"
+        "\nNo bank transactions were recognized.\n"
+        "For Excel/CSV expected something similar to:\n"
         "Date | Narration | Debit | Credit | Balance\n"
         "or Date | Amount | Type (DR/CR).\n\n"
-        "For scanned PDFs, install OCR dependencies or convert the statement "
-        "to searchable PDF / Excel for better audit accuracy."
+        "For PDFs, searchable/text bank statements work best."
     )
 
-tx = pd.concat(all_frames, ignore_index=True, sort=False)
 
-tx["Debit"] = pd.to_numeric(tx["Debit"], errors="coerce")
-tx["Credit"] = pd.to_numeric(tx["Credit"], errors="coerce")
-tx["Balance"] = pd.to_numeric(tx["Balance"], errors="coerce")
+# ============================================================
+# CONSOLIDATE
+# ============================================================
 
-tx["Direction"] = np.where(
-    tx["Debit"].notna(),
+transactions = pd.concat(
+    all_frames,
+    ignore_index=True,
+    sort=False
+)
+
+for required_col in [
+    "Date",
+    "Customer Name",
+    "UTR / Reference",
+    "Narration",
+    "Debit",
+    "Credit",
+    "Balance",
+    "Customer Source",
+    "UTR Source",
+    "Source File",
+    "Source Part",
+    "Source Row",
+    "Source Page",
+    "Parser",
+]:
+    if required_col not in transactions.columns:
+        transactions[required_col] = ""
+
+transactions["Date"] = pd.to_datetime(
+    transactions["Date"],
+    errors="coerce"
+).dt.normalize()
+
+transactions["Debit"] = pd.to_numeric(
+    transactions["Debit"],
+    errors="coerce"
+)
+
+transactions["Credit"] = pd.to_numeric(
+    transactions["Credit"],
+    errors="coerce"
+)
+
+transactions["Balance"] = pd.to_numeric(
+    transactions["Balance"],
+    errors="coerce"
+)
+
+transactions["Direction"] = np.where(
+    transactions["Debit"].notna(),
     "DEBIT",
-    np.where(tx["Credit"].notna(), "CREDIT", "")
+    np.where(
+        transactions["Credit"].notna(),
+        "CREDIT",
+        ""
+    )
 )
 
-tx["Transaction Amount"] = np.where(
-    tx["Direction"].eq("DEBIT"),
-    tx["Debit"],
-    tx["Credit"]
+transactions["Transaction Amount"] = np.where(
+    transactions["Direction"].eq("DEBIT"),
+    transactions["Debit"],
+    transactions["Credit"]
 )
 
-# Never automatically remove duplicates.
+# Duplicate diagnostic only.
 dup_key = (
-    tx["Date"].astype(str)
-    + "|" + tx["Debit"].fillna(0).astype(str)
-    + "|" + tx["Credit"].fillna(0).astype(str)
-    + "|" + tx["UTR / Reference"].fillna("").astype(str)
-    + "|" + tx["Narration"].fillna("").astype(str)
+    transactions["Date"].astype(str)
+    + "|"
+    + transactions["Debit"].fillna(0).astype(str)
+    + "|"
+    + transactions["Credit"].fillna(0).astype(str)
+    + "|"
+    + transactions["UTR / Reference"]
+      .fillna("")
+      .astype(str)
+      .str.strip()
+    + "|"
+    + transactions["Narration"]
+      .fillna("")
+      .astype(str)
+      .str.strip()
 )
 
-tx["Possible Duplicate"] = np.where(
+transactions["Possible Duplicate"] = np.where(
     dup_key.duplicated(keep=False),
     "YES",
     "NO"
@@ -753,7 +1507,8 @@ tx["Possible Duplicate"] = np.where(
 # ============================================================
 
 date_wise = (
-    tx.groupby("Date", dropna=False)
+    transactions
+    .groupby("Date", dropna=False)
     .agg(
         Transaction_Count=("Transaction Amount", "count"),
         Debit_Count=("Debit", lambda s: int(s.notna().sum())),
@@ -770,18 +1525,37 @@ date_wise["Net_Credit_Minus_Debit"] = (
 )
 
 
-tx["Month"] = tx["Date"].dt.to_period("M").astype(str)
+transactions["Month"] = (
+    transactions["Date"]
+    .dt.to_period("M")
+    .astype(str)
+)
 
 month_wise = (
-    tx.groupby("Month", dropna=False)
+    transactions
+    .groupby("Month", dropna=False)
     .agg(
         Transaction_Count=("Transaction Amount", "count"),
         Debit_Count=("Debit", lambda s: int(s.notna().sum())),
         Debit_Total=("Debit", "sum"),
         Credit_Count=("Credit", lambda s: int(s.notna().sum())),
         Credit_Total=("Credit", "sum"),
-        Unique_Customers=("Customer Name", lambda s: s.replace("", np.nan).dropna().nunique()),
-        Unique_UTRs=("UTR / Reference", lambda s: s.replace("", np.nan).dropna().nunique()),
+        Unique_Customers=(
+            "Customer Name",
+            lambda s: (
+                s.replace("", np.nan)
+                 .dropna()
+                 .nunique()
+            )
+        ),
+        Unique_UTRs=(
+            "UTR / Reference",
+            lambda s: (
+                s.replace("", np.nan)
+                 .dropna()
+                 .nunique()
+            )
+        ),
     )
     .reset_index()
 )
@@ -792,8 +1566,12 @@ month_wise["Net_Credit_Minus_Debit"] = (
 )
 
 
-customer_tx = tx[
-    tx["Customer Name"].fillna("").astype(str).str.strip().ne("")
+customer_tx = transactions[
+    transactions["Customer Name"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+    .ne("")
 ].copy()
 
 if customer_tx.empty:
@@ -809,44 +1587,7 @@ if customer_tx.empty:
         "Last_Date",
         "Unique_UTRs",
     ])
-else:
-    customer_wise = (
-        customer_tx.groupby("Customer Name", dropna=False)
-        .agg(
-            Transaction_Count=("Transaction Amount", "count"),
-            Debit_Count=("Debit", lambda s: int(s.notna().sum())),
-            Debit_Total=("Debit", "sum"),
-            Credit_Count=("Credit", lambda s: int(s.notna().sum())),
-            Credit_Total=("Credit", "sum"),
-            First_Date=("Date", "min"),
-            Last_Date=("Date", "max"),
-            Unique_UTRs=("UTR / Reference", lambda s: s.replace("", np.nan).dropna().nunique()),
-        )
-        .reset_index()
-    )
 
-    customer_wise["Net_Credit_Minus_Debit"] = (
-        customer_wise["Credit_Total"].fillna(0)
-        - customer_wise["Debit_Total"].fillna(0)
-    )
-
-    customer_wise = customer_wise[
-        [
-            "Customer Name",
-            "Transaction_Count",
-            "Debit_Count",
-            "Debit_Total",
-            "Credit_Count",
-            "Credit_Total",
-            "Net_Credit_Minus_Debit",
-            "First_Date",
-            "Last_Date",
-            "Unique_UTRs",
-        ]
-    ]
-
-
-if customer_tx.empty:
     customer_date_wise = pd.DataFrame(columns=[
         "Date",
         "Customer Name",
@@ -857,9 +1598,55 @@ if customer_tx.empty:
         "Credit_Total",
         "Net_Credit_Minus_Debit",
     ])
+
 else:
+    customer_wise = (
+        customer_tx
+        .groupby("Customer Name", dropna=False)
+        .agg(
+            Transaction_Count=("Transaction Amount", "count"),
+            Debit_Count=("Debit", lambda s: int(s.notna().sum())),
+            Debit_Total=("Debit", "sum"),
+            Credit_Count=("Credit", lambda s: int(s.notna().sum())),
+            Credit_Total=("Credit", "sum"),
+            First_Date=("Date", "min"),
+            Last_Date=("Date", "max"),
+            Unique_UTRs=(
+                "UTR / Reference",
+                lambda s: (
+                    s.replace("", np.nan)
+                     .dropna()
+                     .nunique()
+                )
+            ),
+        )
+        .reset_index()
+    )
+
+    customer_wise["Net_Credit_Minus_Debit"] = (
+        customer_wise["Credit_Total"].fillna(0)
+        - customer_wise["Debit_Total"].fillna(0)
+    )
+
+    customer_wise = customer_wise[[
+        "Customer Name",
+        "Transaction_Count",
+        "Debit_Count",
+        "Debit_Total",
+        "Credit_Count",
+        "Credit_Total",
+        "Net_Credit_Minus_Debit",
+        "First_Date",
+        "Last_Date",
+        "Unique_UTRs",
+    ]]
+
     customer_date_wise = (
-        customer_tx.groupby(["Date", "Customer Name"], dropna=False)
+        customer_tx
+        .groupby(
+            ["Date", "Customer Name"],
+            dropna=False
+        )
         .agg(
             Transaction_Count=("Transaction Amount", "count"),
             Debit_Count=("Debit", lambda s: int(s.notna().sum())),
@@ -876,81 +1663,151 @@ else:
     )
 
 
-utr_register = tx[
-    [
-        "Date",
-        "Customer Name",
-        "UTR / Reference",
-        "Narration",
-        "Debit",
-        "Credit",
-        "Balance",
-        "Source File",
-    ]
-].copy()
+utr_register = transactions[[
+    "Date",
+    "Customer Name",
+    "UTR / Reference",
+    "Narration",
+    "Debit",
+    "Credit",
+    "Balance",
+    "Source File",
+    "Source Part",
+]].copy()
 
 
 # ============================================================
-# TOTALS
+# CONTROL TOTALS
 # ============================================================
 
-total_count = len(tx)
-debit_count = int(tx["Debit"].notna().sum())
-credit_count = int(tx["Credit"].notna().sum())
-debit_total = float(tx["Debit"].fillna(0).sum())
-credit_total = float(tx["Credit"].fillna(0).sum())
-net_total = credit_total - debit_total
+total_transactions = len(transactions)
 
-valid_dates = tx["Date"].dropna()
-first_date = valid_dates.min() if not valid_dates.empty else None
-last_date = valid_dates.max() if not valid_dates.empty else None
-
-customer_count = int(
-    tx["Customer Name"].replace("", np.nan).dropna().nunique()
+debit_count = int(
+    transactions["Debit"].notna().sum()
 )
 
-utr_count = int(
-    tx["UTR / Reference"].replace("", np.nan).dropna().nunique()
+credit_count = int(
+    transactions["Credit"].notna().sum()
+)
+
+total_debit = float(
+    transactions["Debit"]
+    .fillna(0)
+    .sum()
+)
+
+total_credit = float(
+    transactions["Credit"]
+    .fillna(0)
+    .sum()
+)
+
+net_movement = total_credit - total_debit
+
+valid_dates = transactions["Date"].dropna()
+
+first_date = (
+    valid_dates.min()
+    if not valid_dates.empty
+    else None
+)
+
+last_date = (
+    valid_dates.max()
+    if not valid_dates.empty
+    else None
+)
+
+unique_customers = int(
+    transactions["Customer Name"]
+    .replace("", np.nan)
+    .dropna()
+    .nunique()
+)
+
+unique_utrs = int(
+    transactions["UTR / Reference"]
+    .replace("", np.nan)
+    .dropna()
+    .nunique()
 )
 
 missing_customer = int(
-    tx["Customer Name"].fillna("").astype(str).str.strip().eq("").sum()
+    transactions["Customer Name"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+    .eq("")
+    .sum()
 )
 
 missing_utr = int(
-    tx["UTR / Reference"].fillna("").astype(str).str.strip().eq("").sum()
+    transactions["UTR / Reference"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+    .eq("")
+    .sum()
 )
 
-duplicate_count = int(
-    tx["Possible Duplicate"].eq("YES").sum()
+possible_duplicates = int(
+    transactions["Possible Duplicate"]
+    .eq("YES")
+    .sum()
 )
 
 
 # ============================================================
-# EXCEL HELPERS
+# BUILD PDF RECON TABLE
+# ============================================================
+
+if all_pdf_recon:
+    pdf_page_recon = pd.concat(
+        all_pdf_recon,
+        ignore_index=True,
+        sort=False
+    )
+else:
+    pdf_page_recon = pd.DataFrame(columns=[
+        "Source File",
+        "Page",
+        "Parsed Debit",
+        "Printed Debit",
+        "Debit Difference",
+        "Parsed Credit",
+        "Printed Credit",
+        "Credit Difference",
+        "Status",
+    ])
+
+
+# ============================================================
+# WORKBOOK HELPERS
 # ============================================================
 
 wb = Workbook()
 wb.remove(wb.active)
 
 
-def excel_value(v):
-    if isinstance(v, pd.Timestamp):
-        return v.to_pydatetime()
+def safe_excel_value(value):
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
 
-    if isinstance(v, np.integer):
-        return int(v)
+    if isinstance(value, np.integer):
+        return int(value)
 
-    if isinstance(v, np.floating):
-        return None if np.isnan(v) else float(v)
+    if isinstance(value, np.floating):
+        if np.isnan(value):
+            return None
+        return float(value)
 
-    if pd.isna(v):
+    if pd.isna(value):
         return None
 
-    return v
+    return value
 
 
-def header_style(ws):
+def style_header(ws):
     for cell in ws[1]:
         cell.fill = HEADER_FILL
         cell.font = WHITE_BOLD
@@ -962,49 +1819,102 @@ def header_style(ws):
         )
 
 
-def auto_width(ws, cap=40):
-    for c in range(1, ws.max_column + 1):
+def auto_width(ws, max_width=42):
+    for col_idx in range(1, ws.max_column + 1):
         max_len = 0
 
-        for r in range(1, min(ws.max_row, 2500) + 1):
-            v = ws.cell(r, c).value
-            if v is not None:
-                max_len = max(max_len, len(str(v)))
+        for row_idx in range(
+            1,
+            min(ws.max_row, 3000) + 1
+        ):
+            value = ws.cell(
+                row_idx,
+                col_idx
+            ).value
 
-        ws.column_dimensions[get_column_letter(c)].width = min(
+            if value is not None:
+                max_len = max(
+                    max_len,
+                    len(str(value))
+                )
+
+        ws.column_dimensions[
+            get_column_letter(col_idx)
+        ].width = min(
             max(max_len + 2, 11),
-            cap
+            max_width
         )
 
 
-def write_df(ws, frame, money_cols=(), date_cols=(), count_cols=()):
+def write_df(
+    ws,
+    frame,
+    money_cols=(),
+    date_cols=(),
+    count_cols=()
+):
     if frame is None or frame.empty:
         ws["A1"] = "No data available"
         return
 
-    for c, col in enumerate(frame.columns, start=1):
-        ws.cell(1, c, col)
+    for col_idx, col_name in enumerate(
+        frame.columns,
+        start=1
+    ):
+        ws.cell(
+            1,
+            col_idx,
+            col_name
+        )
 
-    for r, row in enumerate(frame.itertuples(index=False, name=None), start=2):
-        for c, value in enumerate(row, start=1):
-            ws.cell(r, c, excel_value(value))
-            ws.cell(r, c).border = BORDER
-            ws.cell(r, c).alignment = Alignment(vertical="center")
+    for row_idx, row in enumerate(
+        frame.itertuples(
+            index=False,
+            name=None
+        ),
+        start=2
+    ):
+        for col_idx, value in enumerate(
+            row,
+            start=1
+        ):
+            cell = ws.cell(
+                row_idx,
+                col_idx,
+                safe_excel_value(value)
+            )
 
-    header_style(ws)
+            cell.border = BORDER
+            cell.alignment = Alignment(
+                vertical="center"
+            )
 
-    for c, col in enumerate(frame.columns, start=1):
-        if col in money_cols:
+    style_header(ws)
+
+    for col_idx, col_name in enumerate(
+        frame.columns,
+        start=1
+    ):
+        if col_name in money_cols:
             for r in range(2, ws.max_row + 1):
-                ws.cell(r, c).number_format = MONEY
+                ws.cell(
+                    r,
+                    col_idx
+                ).number_format = MONEY_FMT
 
-        if col in date_cols:
+        elif col_name in date_cols:
             for r in range(2, ws.max_row + 1):
-                ws.cell(r, c).number_format = DATE_FMT
+                ws.cell(
+                    r,
+                    col_idx
+                ).number_format = DATE_FMT
 
-        if col in count_cols:
+        elif col_name in count_cols:
             for r in range(2, ws.max_row + 1):
-                ws.cell(r, c).number_format = COUNT_FMT
+                ws.cell(
+                    r,
+                    col_idx
+                ).number_format = COUNT_FMT
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
@@ -1019,41 +1929,87 @@ ws = wb.create_sheet("COVER_REPORT")
 ws.sheet_view.showGridLines = False
 
 ws.merge_cells("A1:D1")
-ws["A1"] = "UNIVERSAL BANK BOOKS OF ACCOUNTS REPORT"
-ws["A1"].font = Font(bold=True, size=16, color="1F4E78")
-ws["A1"].alignment = Alignment(horizontal="center")
 
-cover = [
-    ("Total Transaction Count", total_count),
+ws["A1"] = (
+    "UNIVERSAL BANK BOOKS OF ACCOUNTS REPORT V3"
+)
+
+ws["A1"].font = Font(
+    bold=True,
+    size=16,
+    color="1F4E78"
+)
+
+ws["A1"].alignment = Alignment(
+    horizontal="center"
+)
+
+cover_rows = [
+    ("Total Transaction Count", total_transactions),
     ("Debit Transaction Count", debit_count),
-    ("Total Debit", debit_total),
+    ("Total Debit", total_debit),
     ("Credit Transaction Count", credit_count),
-    ("Total Credit", credit_total),
-    ("Net Credit - Debit", net_total),
+    ("Total Credit", total_credit),
+    ("Net Credit - Debit", net_movement),
     ("First Transaction Date", first_date),
     ("Last Transaction Date", last_date),
-    ("Unique Customers", customer_count),
-    ("Unique UTR / References", utr_count),
+    ("Unique Customers / Counterparties", unique_customers),
+    ("Unique UTR / References", unique_utrs),
     ("Transactions Missing Customer Name", missing_customer),
     ("Transactions Missing UTR / Reference", missing_utr),
-    ("Possible Duplicate Rows", duplicate_count),
-    ("Recognized Source Files", tx["Source File"].nunique()),
+    ("Possible Duplicate Rows", possible_duplicates),
+    (
+        "PDF Reconciliation CHECK Pages",
+        int(
+            pdf_page_recon["Status"]
+            .eq("CHECK")
+            .sum()
+        )
+        if not pdf_page_recon.empty
+        else 0
+    ),
+    (
+        "Recognized Source Files",
+        transactions["Source File"].nunique()
+    ),
 ]
 
-for r, (label, value) in enumerate(cover, start=3):
-    ws.cell(r, 1, label)
-    ws.cell(r, 2, excel_value(value))
+for r, (label, value) in enumerate(
+    cover_rows,
+    start=3
+):
+    ws.cell(
+        r,
+        1,
+        label
+    )
+
+    ws.cell(
+        r,
+        2,
+        safe_excel_value(value)
+    )
 
     ws.cell(r, 1).border = BORDER
     ws.cell(r, 2).border = BORDER
 
-    if label in ("Total Debit", "Total Credit", "Net Credit - Debit"):
-        ws.cell(r, 2).number_format = MONEY
+    if label in (
+        "Total Debit",
+        "Total Credit",
+        "Net Credit - Debit"
+    ):
+        ws.cell(
+            r,
+            2
+        ).number_format = MONEY_FMT
 
     if "Date" in label:
-        ws.cell(r, 2).number_format = DATE_FMT
+        ws.cell(
+            r,
+            2
+        ).number_format = DATE_FMT
 
-ws.column_dimensions["A"].width = 42
+ws.column_dimensions["A"].width = 44
 ws.column_dimensions["B"].width = 24
 
 
@@ -1061,7 +2017,7 @@ ws.column_dimensions["B"].width = 24
 # TRANSACTION_REGISTER
 # ============================================================
 
-register_cols = [
+register_columns = [
     "Date",
     "Customer Name",
     "UTR / Reference",
@@ -1074,8 +2030,10 @@ register_cols = [
     "Customer Source",
     "UTR Source",
     "Possible Duplicate",
+    "Parser",
     "Source File",
     "Source Part",
+    "Source Page",
     "Source Row",
 ]
 
@@ -1083,8 +2041,13 @@ ws = wb.create_sheet("TRANSACTION_REGISTER")
 
 write_df(
     ws,
-    tx[register_cols],
-    money_cols=("Debit", "Credit", "Balance", "Transaction Amount"),
+    transactions[register_columns],
+    money_cols=(
+        "Debit",
+        "Credit",
+        "Balance",
+        "Transaction Amount",
+    ),
     date_cols=("Date",),
 )
 
@@ -1098,9 +2061,17 @@ ws = wb.create_sheet("DATE_WISE_SUMMARY")
 write_df(
     ws,
     date_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
+    money_cols=(
+        "Debit_Total",
+        "Credit_Total",
+        "Net_Credit_Minus_Debit",
+    ),
     date_cols=("Date",),
-    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count"),
+    count_cols=(
+        "Transaction_Count",
+        "Debit_Count",
+        "Credit_Count",
+    ),
 )
 
 
@@ -1113,7 +2084,11 @@ ws = wb.create_sheet("MONTH_WISE_SUMMARY")
 write_df(
     ws,
     month_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
+    money_cols=(
+        "Debit_Total",
+        "Credit_Total",
+        "Net_Credit_Minus_Debit",
+    ),
     count_cols=(
         "Transaction_Count",
         "Debit_Count",
@@ -1133,8 +2108,15 @@ ws = wb.create_sheet("CUSTOMER_WISE_SUMMARY")
 write_df(
     ws,
     customer_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    date_cols=("First_Date", "Last_Date"),
+    money_cols=(
+        "Debit_Total",
+        "Credit_Total",
+        "Net_Credit_Minus_Debit",
+    ),
+    date_cols=(
+        "First_Date",
+        "Last_Date",
+    ),
     count_cols=(
         "Transaction_Count",
         "Debit_Count",
@@ -1153,9 +2135,17 @@ ws = wb.create_sheet("CUSTOMER_DATE_WISE")
 write_df(
     ws,
     customer_date_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
+    money_cols=(
+        "Debit_Total",
+        "Credit_Total",
+        "Net_Credit_Minus_Debit",
+    ),
     date_cols=("Date",),
-    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count"),
+    count_cols=(
+        "Transaction_Count",
+        "Debit_Count",
+        "Credit_Count",
+    ),
 )
 
 
@@ -1168,9 +2158,54 @@ ws = wb.create_sheet("UTR_WISE_REGISTER")
 write_df(
     ws,
     utr_register,
-    money_cols=("Debit", "Credit", "Balance"),
+    money_cols=(
+        "Debit",
+        "Credit",
+        "Balance",
+    ),
     date_cols=("Date",),
 )
+
+
+# ============================================================
+# PDF_PAGE_RECON
+# ============================================================
+
+ws = wb.create_sheet("PDF_PAGE_RECON")
+
+write_df(
+    ws,
+    pdf_page_recon,
+    money_cols=(
+        "Parsed Debit",
+        "Printed Debit",
+        "Debit Difference",
+        "Parsed Credit",
+        "Printed Credit",
+        "Credit Difference",
+    ),
+    count_cols=("Page",),
+)
+
+if not pdf_page_recon.empty:
+    # Highlight CHECK rows.
+    status_col = list(
+        pdf_page_recon.columns
+    ).index("Status") + 1
+
+    for r in range(2, ws.max_row + 1):
+        if ws.cell(
+            r,
+            status_col
+        ).value == "CHECK":
+            for c in range(
+                1,
+                ws.max_column + 1
+            ):
+                ws.cell(
+                    r,
+                    c
+                ).fill = WARN_FILL
 
 
 # ============================================================
@@ -1181,30 +2216,57 @@ ws = wb.create_sheet("CONTROL_TOTALS")
 
 controls = [
     ["Metric", "Value"],
-    ["Total Transaction Count", total_count],
+    ["Total Transaction Count", total_transactions],
     ["Debit Transaction Count", debit_count],
-    ["Total Debit", debit_total],
+    ["Total Debit", total_debit],
     ["Credit Transaction Count", credit_count],
-    ["Total Credit", credit_total],
-    ["Net Credit - Debit", net_total],
-    ["Unique Customers", customer_count],
-    ["Unique UTR / References", utr_count],
+    ["Total Credit", total_credit],
+    ["Net Credit - Debit", net_movement],
+    ["Unique Customers / Counterparties", unique_customers],
+    ["Unique UTR / References", unique_utrs],
     ["Missing Customer Name", missing_customer],
     ["Missing UTR / Reference", missing_utr],
-    ["Possible Duplicate Rows", duplicate_count],
+    ["Possible Duplicate Rows", possible_duplicates],
+    [
+        "PDF Page Reconciliation CHECK Count",
+        int(
+            pdf_page_recon["Status"]
+            .eq("CHECK")
+            .sum()
+        )
+        if not pdf_page_recon.empty
+        else 0
+    ],
 ]
 
-for r, row in enumerate(controls, start=1):
-    for c, value in enumerate(row, start=1):
-        ws.cell(r, c, excel_value(value))
-        ws.cell(r, c).border = BORDER
+for r, row in enumerate(
+    controls,
+    start=1
+):
+    for c, value in enumerate(
+        row,
+        start=1
+    ):
+        ws.cell(
+            r,
+            c,
+            safe_excel_value(value)
+        )
 
-header_style(ws)
+        ws.cell(
+            r,
+            c
+        ).border = BORDER
+
+style_header(ws)
 
 for r in (4, 6, 7):
-    ws.cell(r, 2).number_format = MONEY
+    ws.cell(
+        r,
+        2
+    ).number_format = MONEY_FMT
 
-ws.column_dimensions["A"].width = 38
+ws.column_dimensions["A"].width = 44
 ws.column_dimensions["B"].width = 24
 
 
@@ -1216,8 +2278,8 @@ ws = wb.create_sheet("SOURCE_MAPPING")
 
 write_df(
     ws,
-    pd.DataFrame(source_rows),
-    count_cols=("Header Row", "Transaction Count"),
+    pd.DataFrame(source_map),
+    count_cols=("Transaction Count",),
 )
 
 
@@ -1229,48 +2291,103 @@ ws = wb.create_sheet("REPORT_NOTES")
 
 notes = [
     ["Item", "Note"],
-    ["Purpose", "Bank statement to Books-of-Accounts supporting transaction report."],
-    ["Supported Inputs", "XLSX, XLS, CSV and PDF."],
-    ["Core Fields", "Date, Customer/Counterparty Name, UTR/Reference, Narration, Debit, Credit and Balance."],
-    ["Date-wise", "Daily transaction count, debit count/total, credit count/total and net movement."],
-    ["Month-wise", "Monthly debit/credit totals plus unique customer and UTR counts."],
-    ["Customer-wise", "Customer transaction count, debit/credit totals, first/last date and UTR count."],
-    ["Customer + Date", "Daily totals for each available customer/counterparty."],
-    ["Customer Name", "Uses source customer/payee/payer/beneficiary field where present; otherwise best-effort narration extraction."],
-    ["UTR", "Uses source UTR/reference field where present; otherwise best-effort narration extraction."],
-    ["Missing Fields", "Missing customer/UTR values remain unavailable. The script does not invent them."],
-    ["Duplicates", "Possible duplicates are flagged only and never automatically deleted."],
-    ["PDF", "Searchable bank PDFs are preferred. Scanned PDFs may require OCR and manual verification."],
-    ["Generated On", datetime.now().strftime("%d-%m-%Y %H:%M:%S")],
+    [
+        "Purpose",
+        "Bank statement to supporting Books-of-Accounts transaction report."
+    ],
+    [
+        "V3 PDF Fix",
+        "ICICI-style PDF statements are parsed from transaction text rows because PDF table extraction may collapse an entire page into one multi-line row."
+    ],
+    [
+        "Debit / Credit",
+        "For ICICI-style PDFs, direction is derived from actual running balance movement and transaction amount."
+    ],
+    [
+        "PDF Page Reconciliation",
+        "Where the PDF prints Total Withdrawals and Total Deposits, parsed page totals are checked against those printed figures."
+    ],
+    [
+        "Customer Name",
+        "Uses source name field when available; otherwise uses best-effort structured narration/name-line extraction."
+    ],
+    [
+        "UTR / Reference",
+        "Uses source reference field when available; otherwise extracts known UPI/IMPS/NEFT/RTGS/INFT references from narration."
+    ],
+    [
+        "Missing Values",
+        "Missing customer/UTR values remain unavailable; no value is invented."
+    ],
+    [
+        "Duplicates",
+        "Possible duplicates are only flagged and are never automatically removed."
+    ],
+    [
+        "Supported Files",
+        "XLSX, XLS, CSV and PDF."
+    ],
+    [
+        "Generated On",
+        datetime.now().strftime(
+            "%d-%m-%Y %H:%M:%S"
+        )
+    ],
 ]
 
-for r, row in enumerate(notes, start=1):
-    for c, value in enumerate(row, start=1):
-        ws.cell(r, c, value)
-        ws.cell(r, c).border = BORDER
+for r, row in enumerate(
+    notes,
+    start=1
+):
+    for c, value in enumerate(
+        row,
+        start=1
+    ):
+        ws.cell(
+            r,
+            c,
+            value
+        )
 
-header_style(ws)
-ws.column_dimensions["A"].width = 28
-ws.column_dimensions["B"].width = 110
+        ws.cell(
+            r,
+            c
+        ).border = BORDER
+
+style_header(ws)
+
+ws.column_dimensions["A"].width = 30
+ws.column_dimensions["B"].width = 115
 
 
 # ============================================================
-# SAVE
+# SAVE / CONSOLE CONTROL
 # ============================================================
 
 print("")
-print("=" * 80)
+print("=" * 82)
 print("FINAL TOTALS")
-print("=" * 80)
-print(f"Transactions : {total_count:,}")
+print("=" * 82)
+print(f"Transactions : {total_transactions:,}")
 print(f"Debit Count  : {debit_count:,}")
-print(f"Debit Total  : {debit_total:,.2f}")
+print(f"Debit Total  : {total_debit:,.2f}")
 print(f"Credit Count : {credit_count:,}")
-print(f"Credit Total : {credit_total:,.2f}")
-print(f"Customers    : {customer_count:,}")
-print(f"UTR / Refs   : {utr_count:,}")
+print(f"Credit Total : {total_credit:,.2f}")
+print(f"Customers    : {unique_customers:,}")
+print(f"UTR / Refs   : {unique_utrs:,}")
 print(f"Missing Name : {missing_customer:,}")
 print(f"Missing UTR  : {missing_utr:,}")
+
+if not pdf_page_recon.empty:
+    print(
+        "PDF Page Recon CHECK:",
+        int(
+            pdf_page_recon["Status"]
+            .eq("CHECK")
+            .sum()
+        )
+    )
+
 print("")
 print("Saving:", OUTPUT_FILE)
 
@@ -1278,4 +2395,4 @@ wb.save(OUTPUT_FILE)
 
 print("SUCCESS")
 print("Output:", OUTPUT_FILE)
-print("=" * 80)
+print("=" * 82)
