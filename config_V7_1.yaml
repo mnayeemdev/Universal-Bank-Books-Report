@@ -1,7 +1,7 @@
-# UNIVERSAL BANK BOOKS REPORT V7.1 - VERIFIED CONFIG
+# UNIVERSAL BANK BOOKS REPORT V7.3 - VERIFIED CONFIG
 # Author: Mohamed Nayeem | Instagram: @mohamednayeem7
 #
-# Custom aliases EXTEND the built-in V7.1 aliases; they do not replace them.
+# Custom aliases EXTEND the built-in V7.3 aliases; they do not replace them.
 column_aliases:
   date:
     - date
@@ -108,3 +108,10 @@ pending_statuses:
   - PENDING
   - INPROCESS
   - AUTHORIZED
+
+# Books of Accounts preparation controls
+books_preparation_enabled: true
+books_require_review_before_posting: true
+books_unclassified_ledger: "UNCLASSIFIED COUNTER LEDGER"
+foreign_bank_detection_enabled: true
+legacy_payments_bank_detection: true
