@@ -1,6 +1,6 @@
 """
 ============================================================
-UNIVERSAL BANK BOOKS REPORT V 8.5.1
+UNIVERSAL BANK BOOKS REPORT V7.3
 ============================================================
 Author   : Mohamed Nayeem
 Copyright: © Mohamed Nayeem — All Rights Reserved
@@ -86,8 +86,8 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V8_5_CUSTOMER_MONTHLY"
-DISPLAY_VERSION = "V8.5 CUSTOMER MONTHLY"
+VERSION = "V8_5_1_AUDIT_MODES_CHARGES"
+DISPLAY_VERSION = "V8.5.1 AUDIT MODES + CHARGES"
 
 VALIDATED_BANK_FORMATS = [
     "Axis Bank",
@@ -110,7 +110,7 @@ VALIDATED_BANK_FORMATS = [
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_5_CUSTOMER_MONTHLY.xlsx")
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_5_1_AUDIT_MODES_CHARGES.xlsx")
 BOOKS_OUTPUT_FILE = FULL_OUTPUT_FILE
 TECHNICAL_OUTPUT_FILE = FULL_OUTPUT_FILE
 OUTPUT_FILE = FULL_OUTPUT_FILE
@@ -2143,6 +2143,167 @@ def classify_transaction_type(narration):
     return "OTHER"
 
 
+
+def classify_payment_mode_v851(narration):
+    """
+    V8.5.1 payment-mode classification.
+    This is independent from fee/charge classification.
+    """
+    s = clean_text(narration).upper()
+
+    if any(k in s for k in [
+        "BILLPAY", "BILL PAY", "BILL PAYMENT", "BBPS", "BILLDESK",
+        "UTILITY BILL", "BILL PAYMENT TXN"
+    ]):
+        return "BILL PAYMENT"
+    if "RTGS" in s:
+        return "RTGS"
+    if "NEFT" in s:
+        return "NEFT"
+    if "IMPS" in s or "MMT/IMPS" in s:
+        return "IMPS"
+    if any(k in s for k in ["UPI/", "UPI-", "UPI ", "/UPI/", " UPI/"]):
+        return "UPI"
+    if any(k in s for k in ["CASH DEP", "CASH DEPOSIT", "BY CASH"]):
+        return "CASH DEPOSIT"
+    if any(k in s for k in ["CASH WDL", "CASH WITHDRAWAL", "ATM WDL", "ATM WITHDRAWAL"]):
+        return "CASH WITHDRAWAL"
+    if any(k in s for k in ["CHEQUE", "CHQ", "CTS"]):
+        return "CHEQUE"
+    if any(k in s for k in ["POS", "ECOM", "CARD", "SWIPE"]):
+        return "CARD / POS"
+    if any(k in s for k in ["NACH", "ECS", "ACH"]):
+        return "NACH / ECS"
+    if any(k in s for k in ["INFT", "TRF", "TRANSFER"]):
+        return "BANK TRANSFER"
+    return "OTHER"
+
+
+def classify_charge_type_v851(narration):
+    """
+    Classify actual bank charge / fee / tax transactions.
+    No estimated charge is created.
+    """
+    s = clean_text(narration).upper()
+
+    bill = any(k in s for k in [
+        "BILLPAY", "BILL PAY", "BILL PAYMENT", "BBPS", "BILLDESK", "UTILITY BILL"
+    ])
+    gst = any(k in s for k in ["GST", "CGST", "SGST", "IGST", "SERVICE TAX"])
+    fee = any(k in s for k in [
+        "CHARGE", "CHARGES", "CHGS", "CHG", "FEE", "FEES",
+        "COMMISSION", "COMM.", "COMMN", "PENAL", "PROCESSING FEE",
+        "SERVICE CHARGE", "TRANSACTION CHARGE", "TXN CHARGE",
+        "SMS CHARGE", "ATM CHARGE", "ANNUAL FEE",
+        "IMPS CHARGE", "NEFT CHARGE", "RTGS CHARGE", "UPI CHARGE",
+        "ACH CHARGE", "NACH CHARGE", "CHEQUE RETURN CHARGE",
+        "RETURN CHARGE", "BOUNCE CHARGE"
+    ])
+
+    if bill and fee:
+        return "BILL PAYMENT FEE"
+    if gst and fee:
+        return "GST ON BANK CHARGES"
+    if gst:
+        return "GST / TAX"
+    if fee:
+        return "BANK CHARGES / FEES"
+    return ""
+
+
+def add_v851_audit_columns(df):
+    """
+    Adds reporting-only audit columns. Original transaction data is preserved.
+    Charge Amount uses the actual debit/credit amount of a charge row only.
+    """
+    g = df.copy()
+
+    g["Payment Mode"] = g["Narration"].map(classify_payment_mode_v851)
+    g["Charge Type"] = g["Narration"].map(classify_charge_type_v851)
+    g["Is Charge / Fee"] = g["Charge Type"].ne("").map({True: "YES", False: "NO"})
+
+    # Actual transaction value only; no artificial fee calculation.
+    g["Charge Amount"] = 0.0
+    charge_mask = g["Charge Type"].ne("")
+    g.loc[charge_mask, "Charge Amount"] = (
+        g.loc[charge_mask, "Debit"].fillna(0) + g.loc[charge_mask, "Credit"].fillna(0)
+    ).abs()
+
+    g["Bank Charges / Fees"] = 0.0
+    mask = g["Charge Type"].eq("BANK CHARGES / FEES")
+    g.loc[mask, "Bank Charges / Fees"] = g.loc[mask, "Charge Amount"]
+
+    g["GST / Tax Charges"] = 0.0
+    mask = g["Charge Type"].isin(["GST / TAX", "GST ON BANK CHARGES"])
+    g.loc[mask, "GST / Tax Charges"] = g.loc[mask, "Charge Amount"]
+
+    g["Bill Payment Fees"] = 0.0
+    mask = g["Charge Type"].eq("BILL PAYMENT FEE")
+    g.loc[mask, "Bill Payment Fees"] = g.loc[mask, "Charge Amount"]
+
+    return g
+
+
+def mode_summary_v851(grp):
+    g = add_v851_audit_columns(grp)
+    rows = []
+    preferred = [
+        "BILL PAYMENT", "NEFT", "IMPS", "UPI", "RTGS",
+        "CASH DEPOSIT", "CASH WITHDRAWAL", "CHEQUE",
+        "CARD / POS", "NACH / ECS", "BANK TRANSFER", "OTHER"
+    ]
+    for mode in preferred:
+        x = g[g["Payment Mode"].eq(mode)]
+        if x.empty:
+            continue
+        rows.append({
+            "Payment Mode": mode,
+            "Transaction Count": len(x),
+            "Debit Count": int(x["Debit"].notna().sum()),
+            "Total Debit": float(x["Debit"].fillna(0).sum()),
+            "Credit Count": int(x["Credit"].notna().sum()),
+            "Total Credit": float(x["Credit"].fillna(0).sum()),
+            "Net Credit - Debit": float(x["Credit"].fillna(0).sum() - x["Debit"].fillna(0).sum()),
+        })
+    return pd.DataFrame(rows)
+
+
+def charges_summary_v851(grp):
+    g = add_v851_audit_columns(grp)
+    x = g[g["Charge Type"].ne("")].copy()
+    if x.empty:
+        return pd.DataFrame(columns=[
+            "Charge Type", "Transaction Count", "Total Charge Amount",
+            "Total Debit Charges", "Total Credit/Reversal", "First Date", "Last Date"
+        ])
+    rows = []
+    for charge_type, c in x.groupby("Charge Type", sort=True):
+        rows.append({
+            "Charge Type": charge_type,
+            "Transaction Count": len(c),
+            "Total Charge Amount": float(c["Charge Amount"].fillna(0).sum()),
+            "Total Debit Charges": float(c["Debit"].fillna(0).sum()),
+            "Total Credit/Reversal": float(c["Credit"].fillna(0).sum()),
+            "First Date": c["Date"].dropna().min() if c["Date"].notna().any() else pd.NaT,
+            "Last Date": c["Date"].dropna().max() if c["Date"].notna().any() else pd.NaT,
+        })
+    return pd.DataFrame(rows)
+
+
+def charge_ledger_v851(grp):
+    g = add_v851_audit_columns(grp)
+    x = g[g["Charge Type"].ne("")].copy()
+    cols = [c for c in [
+        "Date","Customer Name","UTR / Reference","Narration",
+        "Payment Mode","Charge Type","Charge Amount",
+        "Bank Charges / Fees","GST / Tax Charges","Bill Payment Fees",
+        "Debit","Credit","Balance","Direction",
+        "Source Part","Source Row","Review Status"
+    ] if c in x.columns]
+    return x[cols].sort_values(["Date","Source Row"], kind="stable", na_position="last").reset_index(drop=True)
+
+
+
 def explicit_gst_component(narration):
     """Extract GST amount only when narration explicitly states an amount."""
     s = clean_text(narration)
@@ -2717,7 +2878,7 @@ cover = pd.DataFrame([
 #   * INTERBANK_MATCHES contains candidate cross-bank debit/credit pairs only.
 #     It does not invent or automatically confirm an internal transfer.
 
-BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_5_CUSTOMER_MONTHLY")
+BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_5_1_AUDIT_MODES_CHARGES")
 os.makedirs(BANK_OUTPUT_DIR, exist_ok=True)
 
 
@@ -3048,6 +3209,24 @@ THIN_SIMPLE = Side(style='thin', color='D9D9D9')
 BORDER_SIMPLE = Border(left=THIN_SIMPLE,right=THIN_SIMPLE,top=THIN_SIMPLE,bottom=THIN_SIMPLE)
 MONEY_FMT_SIMPLE = '₹#,##0.00;[Red](₹#,##0.00);-'
 
+MODE_FILLS_V851 = {
+    "BILL PAYMENT": PatternFill("solid", fgColor="FFF2CC"),
+    "NEFT": PatternFill("solid", fgColor="D9EAD3"),
+    "IMPS": PatternFill("solid", fgColor="D9EAF7"),
+    "UPI": PatternFill("solid", fgColor="EADCF8"),
+    "RTGS": PatternFill("solid", fgColor="FCE5CD"),
+    "CASH DEPOSIT": PatternFill("solid", fgColor="D0E0E3"),
+    "CASH WITHDRAWAL": PatternFill("solid", fgColor="F4CCCC"),
+    "CHEQUE": PatternFill("solid", fgColor="CFE2F3"),
+    "CARD / POS": PatternFill("solid", fgColor="E2F0D9"),
+    "NACH / ECS": PatternFill("solid", fgColor="D9D2E9"),
+    "BANK TRANSFER": PatternFill("solid", fgColor="EDEDED"),
+    "OTHER": PatternFill("solid", fgColor="FFFFFF"),
+}
+CHARGE_FILL_V851 = PatternFill("solid", fgColor="FFD966")
+GST_FILL_V851 = PatternFill("solid", fgColor="F4B183")
+BILL_FEE_FILL_V851 = PatternFill("solid", fgColor="FFE699")
+
 
 def _safe(v):
     try:
@@ -3062,7 +3241,7 @@ def _safe(v):
     return v
 
 
-def add_df_sheet(wb,name,df,money_cols=(),date_cols=(),highlight_review=False):
+def add_df_sheet(wb,name,df,money_cols=(),date_cols=(),highlight_review=False,highlight_modes=False,highlight_charges=False):
     used={x.upper() for x in wb.sheetnames}
     name=safe_sheet_name(name,used)
     ws=wb.create_sheet(name)
@@ -3083,7 +3262,27 @@ def add_df_sheet(wb,name,df,money_cols=(),date_cols=(),highlight_review=False):
             if cols[c-1] in date_cols and cell.value is not None:
                 cell.number_format='dd-mm-yyyy'
         if highlight_review and 'Match Status' in cols:
-            for cell in ws[r]: cell.fill=WARN_FILL_SIMPLE
+            for cell in ws[r]:
+                cell.fill=WARN_FILL_SIMPLE
+
+        if highlight_modes and 'Payment Mode' in cols:
+            mode = clean_text(df.iloc[r-2].get('Payment Mode'))
+            fill = MODE_FILLS_V851.get(mode)
+            if fill:
+                for cell in ws[r]:
+                    cell.fill = fill
+
+        if highlight_charges and 'Charge Type' in cols:
+            charge_type = clean_text(df.iloc[r-2].get('Charge Type'))
+            if charge_type:
+                if charge_type == 'BILL PAYMENT FEE':
+                    fill = BILL_FEE_FILL_V851
+                elif charge_type in ('GST / TAX', 'GST ON BANK CHARGES'):
+                    fill = GST_FILL_V851
+                else:
+                    fill = CHARGE_FILL_V851
+                for cell in ws[r]:
+                    cell.fill = fill
     ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
     for idx,col in enumerate(cols,1):
         vals=[str(col)] + [str(x) for x in df[col].head(150).fillna('').tolist()]
@@ -3139,6 +3338,14 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
         ['Transactions',len(grp)],
         ['Identified Customers',int(grp['Customer Name'].fillna('').astype(str).str.strip().replace('',np.nan).nunique())],
         ['Unidentified Customer Rows',int(grp['Customer Name'].fillna('').astype(str).str.strip().eq('').sum())],
+        ['Bill Payment Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('BILL PAYMENT').sum())],
+        ['NEFT Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('NEFT').sum())],
+        ['IMPS Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('IMPS').sum())],
+        ['UPI Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('UPI').sum())],
+        ['RTGS Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('RTGS').sum())],
+        ['Cash Deposit Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('CASH DEPOSIT').sum())],
+        ['Cash Withdrawal Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('CASH WITHDRAWAL').sum())],
+        ['Total Actual Charges / Fees',float(add_v851_audit_columns(grp)['Charge Amount'].fillna(0).sum())],
         ['Total Debit',float(grp['Debit'].fillna(0).sum())],
         ['Total Credit',float(grp['Credit'].fillna(0).sum())],
         ['Net Credit - Debit',float(grp['Credit'].fillna(0).sum()-grp['Debit'].fillna(0).sum())],
@@ -3182,14 +3389,51 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
         money_cols=()
     )
 
+    # V8.5.1 — EASY AUDIT MODE + CHARGE REPORTS
+    audit_grp = add_v851_audit_columns(grp)
+
+    mode_summary = mode_summary_v851(grp)
+    add_df_sheet(
+        wb,'MODE_SUMMARY',mode_summary,
+        money_cols=('Total Debit','Total Credit','Net Credit - Debit'),
+        highlight_modes=True
+    )
+
+    charges_summary = charges_summary_v851(grp)
+    add_df_sheet(
+        wb,'CHARGES_SUMMARY',charges_summary,
+        money_cols=('Total Charge Amount','Total Debit Charges','Total Credit/Reversal'),
+        date_cols=('First Date','Last Date'),
+        highlight_charges=True
+    )
+
+    charge_ledger = charge_ledger_v851(grp)
+    add_df_sheet(
+        wb,'CHARGES_LEDGER',charge_ledger,
+        money_cols=('Charge Amount','Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees',
+                    'Debit','Credit','Balance'),
+        date_cols=('Date',),
+        highlight_charges=True
+    )
+
     # EASY STATEMENT — clean normalized statement for this source only.
+    grp = audit_grp
     easy_cols=[c for c in [
-        'Date','Customer Name','UTR / Reference','Narration','Debit','Credit','Balance',
-        'Direction','Transaction Amount','Transaction Type','Possible Duplicate','Review Status',
+        'Date','Customer Name','UTR / Reference','Narration',
+        'Payment Mode','Charge Type','Is Charge / Fee',
+        'Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees','Charge Amount',
+        'Debit','Credit','Balance','Direction','Transaction Amount',
+        'Transaction Type','Possible Duplicate','Review Status',
         'Source Part','Source Row'
     ] if c in grp.columns]
-    add_df_sheet(wb,'EASY_STATEMENT',grp[easy_cols],
-                 money_cols=('Debit','Credit','Balance','Transaction Amount'),date_cols=('Date',))
+    add_df_sheet(
+        wb,'EASY_STATEMENT',grp[easy_cols],
+        money_cols=('Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees','Charge Amount',
+                    'Debit','Credit','Balance','Transaction Amount'),
+        date_cols=('Date',),
+        highlight_modes=True,
+        highlight_charges=True
+    )
 
     # AUDIT CONTROL for this source only.
     recon=bank_reconciliation[bank_reconciliation['Source File'].astype(str).eq(str(source_file))].copy() if 'Source File' in bank_reconciliation.columns else pd.DataFrame()
@@ -3230,7 +3474,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
 
 print('')
 print('='*82)
-print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.5 CUSTOMER MONTHLY')
+print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.5.1 AUDIT MODES + CHARGES')
 print('='*82)
 print('Output Folder :',BANK_OUTPUT_DIR)
 print('Bank Files    :',len(generated_files))
@@ -3241,7 +3485,7 @@ for p in generated_files:
     print(' -',os.path.basename(p))
 print('')
 print('Every bank/source workbook contains:')
-print('  COVER | MONTHLY_SUMMARY | CUSTOMER_WISE_SUMMARY | CUSTOMER_MONTHLY | CUSTOMER_LEDGER | CUSTOMER_CONTROL | EASY_STATEMENT | RECONCILIATION | INTERBANK_MATCHES | REAL_RAW_*')
+print('  COVER | MONTHLY_SUMMARY | CUSTOMER_WISE_SUMMARY | CUSTOMER_MONTHLY | CUSTOMER_LEDGER | CUSTOMER_CONTROL | MODE_SUMMARY | CHARGES_SUMMARY | CHARGES_LEDGER | EASY_STATEMENT | RECONCILIATION | INTERBANK_MATCHES | REAL_RAW_*')
 print('')
 print('INTERBANK_MATCHES are CANDIDATES ONLY and must be verified from the actual bank statements.')
 print('Author:',AUTHOR_NAME,'|',AUTHOR_INSTAGRAM)
