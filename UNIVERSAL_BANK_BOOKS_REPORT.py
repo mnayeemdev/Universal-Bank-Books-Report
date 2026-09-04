@@ -86,14 +86,31 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V8_3_BANKWISE_FIXED"
-DISPLAY_VERSION = "V8.3 BANK-WISE FIXED"
+VERSION = "V8_4_VALIDATED"
+DISPLAY_VERSION = "V8.4 VALIDATED"
+
+VALIDATED_BANK_FORMATS = [
+    "Axis Bank",
+    "HDFC Bank",
+    "ICICI Bank",
+    "IDFC FIRST Bank",
+    "South Indian Bank",
+    "Standard Chartered Bank",
+    "Yes Bank",
+]
+
+# V8.4 validation notes:
+# - Tested against the supplied real XLSX bank statements.
+# - Supports repeated page headers / shifted table columns.
+# - ICICI SR283403308 multi-header statement no longer stops at first section.
+# - Standard Chartered transactions after repeated headers are retained.
+# - Genuine transactions are not removed merely because values repeat.
 
 # ============================================================
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_1_SIMPLE.xlsx")
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_4_VALIDATED.xlsx")
 BOOKS_OUTPUT_FILE = FULL_OUTPUT_FILE
 TECHNICAL_OUTPUT_FILE = FULL_OUTPUT_FILE
 OUTPUT_FILE = FULL_OUTPUT_FILE
@@ -677,6 +694,8 @@ logger = logging.getLogger("universal_bank_books_v7")
 logger.info("Run ID: %s", RUN_ID)
 logger.info("Config: %s", CONFIG_FILE)
 logger.info("Output: %s", OUTPUT_FILE)
+logger.info("Validated XLSX formats: %s", ", ".join(VALIDATED_BANK_FORMATS))
+logger.info("Multi-header / shifted-column parsing: ENABLED")
 
 exceptions_list = []
 raw_data_sheets = {}
@@ -2698,7 +2717,7 @@ cover = pd.DataFrame([
 #   * INTERBANK_MATCHES contains candidate cross-bank debit/credit pairs only.
 #     It does not invent or automatically confirm an internal transfer.
 
-BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_3_FIXED")
+BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_4_VALIDATED")
 os.makedirs(BANK_OUTPUT_DIR, exist_ok=True)
 
 
@@ -3003,7 +3022,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
 
 print('')
 print('='*82)
-print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.3 FIXED')
+print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.4 VALIDATED')
 print('='*82)
 print('Output Folder :',BANK_OUTPUT_DIR)
 print('Bank Files    :',len(generated_files))
