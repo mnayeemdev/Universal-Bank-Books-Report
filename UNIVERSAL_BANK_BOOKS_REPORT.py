@@ -1,13 +1,13 @@
 """
 ============================================================
-UNIVERSAL BANK BOOKS REPORT V6
+UNIVERSAL BANK BOOKS REPORT V7.1
 ============================================================
 Author   : Mohamed Nayeem
 Copyright: © Mohamed Nayeem — All Rights Reserved
 Instagram: @mohamednayeem7
 ============================================================
 
-V6 — AUDIT-READY UNIVERSAL BANK BOOKS
+V7.1 — INDIA-WIDE BANK FORMAT COVERAGE + DIAGNOSTICS + AUDIT CONTROLS
 ----------------------------
 Supports ALL major Indian bank statement formats:
   SBI, HDFC, ICICI, Axis, Kotak Mahindra, PNB, BOB,
@@ -16,9 +16,9 @@ Supports ALL major Indian bank statement formats:
   Jana, Suryoday, Utkarsh, and any bank that produces
   a standard tabular statement.
 
-File types:  .xlsx  .xls  .csv  .pdf
+File types:  .xlsx  .xls  .csv  .pdf  .html  .htm  .txt
 
-Output:  UNIVERSAL_BANK_BOOKS_REPORT_V6.xlsx
+Output:  UNIVERSAL_BANK_BOOKS_REPORT_V7_1.xlsx
 
 Sheets:
   COVER_REPORT
@@ -56,17 +56,21 @@ DATA INTEGRITY
   - PDF page totals are used as a control check.
 
 INSTALL
-  python -m pip install pandas openpyxl xlrd pdfplumber
+  python -m pip install pandas openpyxl xlrd pdfplumber pyyaml lxml
 Optional OCR:
   python -m pip install pytesseract pdf2image pillow
 
 RUN
-  python UNIVERSAL_BANK_BOOKS_REPORT_V6.py
+  python UNIVERSAL_BANK_BOOKS_REPORT_V7.py
 """
 
 import os
+import sys
 import glob
 import re
+import yaml
+import logging
+import traceback
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -80,7 +84,8 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V6"
+VERSION = "V7_1"
+DISPLAY_VERSION = "V7.1"
 
 # ============================================================
 # CONFIG
@@ -88,13 +93,15 @@ VERSION = "V6"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(
     BASE_DIR,
-    f"UNIVERSAL_BANK_BOOKS_REPORT_{VERSION}.xlsx",
+    "UNIVERSAL_BANK_BOOKS_REPORT_V7_1.xlsx",
 )
 PATTERNS = (
     "*.xlsx", "*.XLSX",
     "*.xls",  "*.XLS",
     "*.csv",  "*.CSV",
     "*.pdf",  "*.PDF",
+    "*.html", "*.HTML", "*.htm", "*.HTM",
+    "*.txt", "*.TXT",
 )
 input_files = []
 for pattern in PATTERNS:
@@ -103,6 +110,8 @@ input_files = sorted({
     p for p in input_files
     if os.path.abspath(p).lower() != os.path.abspath(OUTPUT_FILE).lower()
     and not os.path.basename(p).startswith("~$")
+    and not re.match(r"(?i)^UNIVERSAL_BANK_BOOKS_REPORT_V[0-9_.-]+\.xlsx$", os.path.basename(p))
+    and not re.match(r"(?i)^audit_log_\d{8}_\d{6}\.txt$", os.path.basename(p))
 })
 if not input_files:
     raise FileNotFoundError(
@@ -207,6 +216,43 @@ BANK_SIGNATURES = {
     ],
 }
 
+# V7.1 — extended India-wide bank fingerprints. Generic parsing still works
+# for an unknown/co-operative bank when standard statement fields are present.
+BANK_SIGNATURES.update({
+    "IDFC FIRST Bank": ["idfc first", "idfcfirst", "transaction date", "balance"],
+    "Indian Bank": ["indian bank", "transaction date", "particulars", "balance"],
+    "Indian Overseas Bank": ["indian overseas bank", "iob", "transaction date", "balance"],
+    "Bank of India": ["bank of india", "transaction date", "particulars", "balance"],
+    "Central Bank of India": ["central bank of india", "transaction date", "balance"],
+    "UCO Bank": ["uco bank", "transaction date", "balance"],
+    "Bank of Maharashtra": ["bank of maharashtra", "transaction date", "balance"],
+    "Punjab & Sind Bank": ["punjab & sind bank", "punjab and sind bank", "transaction date"],
+    "Karur Vysya Bank": ["karur vysya bank", "kvb", "transaction date", "balance"],
+    "City Union Bank": ["city union bank", "cub", "transaction date", "balance"],
+    "Tamilnad Mercantile Bank": ["tamilnad mercantile bank", "tmb", "transaction date", "balance"],
+    "South Indian Bank": ["south indian bank", "sib", "transaction date", "balance"],
+    "Karnataka Bank": ["karnataka bank", "transaction date", "balance"],
+    "DCB Bank": ["dcb bank", "transaction date", "balance"],
+    "CSB Bank": ["csb bank", "catholic syrian bank", "transaction date"],
+    "Dhanlaxmi Bank": ["dhanlaxmi bank", "transaction date", "balance"],
+    "Jammu & Kashmir Bank": ["jammu & kashmir bank", "j&k bank", "jk bank"],
+    "Nainital Bank": ["nainital bank", "transaction date", "balance"],
+    "Jana Small Finance Bank": ["jana small finance bank", "jana", "transaction date"],
+    "Suryoday Small Finance Bank": ["suryoday small finance bank", "suryoday", "transaction date"],
+    "Utkarsh Small Finance Bank": ["utkarsh small finance bank", "utkarsh", "transaction date"],
+    "Ujjivan Small Finance Bank": ["ujjivan small finance bank", "ujjivan", "transaction date"],
+    "Equitas Small Finance Bank": ["equitas small finance bank", "equitas", "transaction date"],
+    "ESAF Small Finance Bank": ["esaf small finance bank", "esaf", "transaction date"],
+    "Capital Small Finance Bank": ["capital small finance bank", "capital sfb", "transaction date"],
+    "Unity Small Finance Bank": ["unity small finance bank", "unity sfb", "transaction date"],
+    "Shivalik Small Finance Bank": ["shivalik small finance bank", "shivalik", "transaction date"],
+    "Airtel Payments Bank": ["airtel payments bank", "airtel bank", "transaction date"],
+    "India Post Payments Bank": ["india post payments bank", "ippb", "transaction date"],
+    "Fino Payments Bank": ["fino payments bank", "fino bank", "transaction date"],
+    "Jio Payments Bank": ["jio payments bank", "jio bank", "transaction date"],
+    "NSDL Payments Bank": ["nsdl payments bank", "nsdl bank", "transaction date"],
+})
+
 
 def detect_bank_from_text(text):
     """Best-effort bank detection from first-page PDF text."""
@@ -294,6 +340,237 @@ ALIASES = {
     ],
 }
 
+
+# V7.1 — extra header variants seen across Indian retail/current-account exports.
+_EXTRA_ALIASES = {
+    "date": ["txn dt", "transaction dt.", "posting dt", "date & time", "transaction date & time"],
+    "narration": ["transaction remarks", "transaction narration", "description/narration", "particulars / narration", "txn particulars / narration"],
+    "debit": ["withdrawal amt.", "withdrawal amount(inr)", "debit amount(inr)", "debit amt(inr)", "dr amt", "dr amt."],
+    "credit": ["deposit amt.", "deposit amount(inr)", "credit amount(inr)", "credit amt(inr)", "cr amt", "cr amt."],
+    "balance": ["closing balance(inr)", "available bal", "ledger bal", "running bal", "balance amount", "balance amt"],
+    "customer": ["remitter", "beneficiary / remitter", "counter party", "counter-party", "transaction party"],
+    "utr": ["utr/ref no", "utr / ref no", "reference/cheque no", "chq/ref", "cheque/reference", "transaction reference no", "rrn/utr"],
+    "amount": ["txn amt.", "transaction value", "value amount", "debit/credit amount", "cr/dr amount"],
+    "type": ["dr/cr indicator", "debit/credit indicator", "txn nature", "nature", "transaction nature", "cr/dr"],
+}
+for _field, _values in _EXTRA_ALIASES.items():
+    _seen = {re.sub(r"[^a-z0-9]+", " ", str(v).lower()).strip() for v in ALIASES.setdefault(_field, [])}
+    for _value in _values:
+        _key = re.sub(r"[^a-z0-9]+", " ", str(_value).lower()).strip()
+        if _key not in _seen:
+            ALIASES[_field].append(_value)
+            _seen.add(_key)
+
+# ============================================================
+# V7 CONFIGURATION — VALIDATED AND MERGED WITH BUILT-IN ALIASES
+# ============================================================
+# Important: config aliases EXTEND the proven V6/V7 built-in aliases.
+# They never replace them, so a short custom YAML cannot reduce bank support.
+CONFIG_CANDIDATES = [
+    os.path.join(BASE_DIR, "config.yaml"),
+    os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_CONFIG_V7.yaml"),
+]
+CONFIG_FILE = next((p for p in CONFIG_CANDIDATES if os.path.exists(p)), CONFIG_CANDIDATES[0])
+
+DEFAULT_CONFIG = {
+    "column_aliases": {},
+    "rounding_precision": 2,
+    "max_rows_per_sheet": 1000000,
+    "preserve_raw_data": True,
+    "review_confidence_ok": 85,
+    "review_confidence_min": 65,
+    # PG/GST validation is deliberately disabled for ordinary bank statements.
+    # A bank transaction alone does not prove that a PG charge applies.
+    "pg_validation_enabled": False,
+    "pg_charge_rate": 0.008,
+    "gst_rate": 0.18,
+    "success_statuses": ["SUCCESS", "COMPLETED", "CAPTURED", "SETTLED"],
+    "failed_statuses": ["FAILED", "DECLINED", "REJECTED", "ERROR"],
+    "pending_statuses": ["PENDING", "INPROCESS", "AUTHORIZED"],
+    "diagnostic_mode": True,
+    "ocr_enabled": True,
+    "allow_leading_serial_before_date": True,
+    "unknown_bank_generic_parser": True,
+}
+
+
+def validate_config(cfg):
+    if cfg is None:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        raise ValueError("config.yaml root must be a mapping/object.")
+
+    merged = dict(DEFAULT_CONFIG)
+    merged.update(cfg)
+
+    aliases_cfg = merged.get("column_aliases", {})
+    if aliases_cfg is None:
+        aliases_cfg = {}
+    if not isinstance(aliases_cfg, dict):
+        raise ValueError("column_aliases must be a mapping of field -> list of aliases.")
+    for field, values in aliases_cfg.items():
+        if not isinstance(field, str):
+            raise ValueError("Every column_aliases key must be text.")
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            raise ValueError(f"column_aliases.{field} must be a list of strings.")
+
+    try:
+        merged["rounding_precision"] = int(merged.get("rounding_precision", 2))
+    except Exception:
+        raise ValueError("rounding_precision must be an integer.")
+    if not 0 <= merged["rounding_precision"] <= 8:
+        raise ValueError("rounding_precision must be between 0 and 8.")
+
+    try:
+        merged["max_rows_per_sheet"] = int(merged.get("max_rows_per_sheet", 1000000))
+    except Exception:
+        raise ValueError("max_rows_per_sheet must be an integer.")
+    # Excel supports 1,048,576 rows including header.
+    if not 1000 <= merged["max_rows_per_sheet"] <= 1048575:
+        raise ValueError("max_rows_per_sheet must be between 1,000 and 1,048,575 data rows.")
+
+    for key in ("review_confidence_ok", "review_confidence_min"):
+        try:
+            merged[key] = int(merged.get(key, DEFAULT_CONFIG[key]))
+        except Exception:
+            raise ValueError(f"{key} must be an integer.")
+        if not 0 <= merged[key] <= 100:
+            raise ValueError(f"{key} must be between 0 and 100.")
+    if merged["review_confidence_min"] > merged["review_confidence_ok"]:
+        raise ValueError("review_confidence_min cannot be greater than review_confidence_ok.")
+
+    for key in ("pg_charge_rate", "gst_rate"):
+        try:
+            merged[key] = float(merged.get(key, DEFAULT_CONFIG[key]))
+        except Exception:
+            raise ValueError(f"{key} must be numeric.")
+        if merged[key] < 0 or merged[key] > 1:
+            raise ValueError(f"{key} must be between 0 and 1 (for example 0.008 = 0.8%).")
+
+    merged["preserve_raw_data"] = bool(merged.get("preserve_raw_data", True))
+    merged["pg_validation_enabled"] = bool(merged.get("pg_validation_enabled", False))
+    merged["diagnostic_mode"] = bool(merged.get("diagnostic_mode", True))
+    merged["ocr_enabled"] = bool(merged.get("ocr_enabled", True))
+    merged["allow_leading_serial_before_date"] = bool(merged.get("allow_leading_serial_before_date", True))
+    merged["unknown_bank_generic_parser"] = bool(merged.get("unknown_bank_generic_parser", True))
+
+    for key in ("success_statuses", "failed_statuses", "pending_statuses"):
+        values = merged.get(key, DEFAULT_CONFIG[key])
+        if not isinstance(values, list):
+            raise ValueError(f"{key} must be a list.")
+        merged[key] = [str(v).strip().upper() for v in values if str(v).strip()]
+
+    merged["column_aliases"] = aliases_cfg
+    return merged
+
+
+if not os.path.exists(CONFIG_FILE):
+    # Create a safe default and continue. No forced exit is needed.
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        yaml.safe_dump(DEFAULT_CONFIG, f, sort_keys=False, allow_unicode=True)
+
+try:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        CONFIG = validate_config(yaml.safe_load(f))
+except Exception as exc:
+    raise ValueError(f"Invalid YAML configuration: {CONFIG_FILE}\\n{exc}") from exc
+
+# Merge custom aliases into built-in aliases without deleting built-in support.
+for field, custom_values in CONFIG.get("column_aliases", {}).items():
+    existing = ALIASES.setdefault(field, [])
+    seen = {str(v).strip().lower() for v in existing}
+    for value in custom_values:
+        key = str(value).strip().lower()
+        if key and key not in seen:
+            existing.append(value)
+            seen.add(key)
+
+ROUND_DECIMALS = CONFIG["rounding_precision"]
+MAX_ROWS_PER_SHEET = CONFIG["max_rows_per_sheet"]
+PRESERVE_RAW_DATA = CONFIG["preserve_raw_data"]
+REVIEW_OK_THRESHOLD = CONFIG["review_confidence_ok"]
+REVIEW_MIN_THRESHOLD = CONFIG["review_confidence_min"]
+PG_VALIDATION_ENABLED = CONFIG["pg_validation_enabled"]
+PG_CHARGE_RATE = CONFIG["pg_charge_rate"]
+GST_RATE = CONFIG["gst_rate"]
+DIAGNOSTIC_MODE = CONFIG["diagnostic_mode"]
+OCR_ENABLED = CONFIG["ocr_enabled"]
+ALLOW_LEADING_SERIAL_BEFORE_DATE = CONFIG["allow_leading_serial_before_date"]
+UNKNOWN_BANK_GENERIC_PARSER = CONFIG["unknown_bank_generic_parser"]
+
+# ============================================================
+# V7 LOGGING / AUDIT TRAIL
+# ============================================================
+RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+LOG_FILE = os.path.join(BASE_DIR, f"audit_log_{RUN_ID}.txt")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger("universal_bank_books_v7")
+logger.info("Run ID: %s", RUN_ID)
+logger.info("Config: %s", CONFIG_FILE)
+logger.info("Output: %s", OUTPUT_FILE)
+
+exceptions_list = []
+raw_data_sheets = {}
+raw_data_index_records = []
+row_control_seed = []
+parser_recon_records = []
+format_diagnostic_records = []
+
+
+def log_exception(category, description, source_file="", source_part="", source_row=""):
+    record = {
+        "Exception Type": str(category),
+        "Description": str(description),
+        "Source File": str(source_file),
+        "Source Part": str(source_part),
+        "Source Row": source_row,
+        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    exceptions_list.append(record)
+    logger.warning("%s: %s | %s | %s", category, description, source_file, source_part)
+
+
+def sanitize_sheet_name(name, used=None):
+    value = re.sub(r"[\\/*?:\\[\\]]", "_", str(name or "Sheet"))
+    value = value.strip(" '") or "Sheet"
+    value = value[:31]
+    if used is None:
+        return value
+    candidate = value
+    n = 2
+    while candidate.lower() in used:
+        suffix = f"_{n}"
+        candidate = value[:31-len(suffix)] + suffix
+        n += 1
+    used.add(candidate.lower())
+    return candidate
+
+
+def store_raw_data(df, source_file, source_part):
+    if not PRESERVE_RAW_DATA or df is None or df.empty:
+        return
+    chunk_size = min(MAX_ROWS_PER_SHEET, 1048575)
+    total = len(df)
+    for start in range(0, total, chunk_size):
+        chunk = df.iloc[start:start + chunk_size].copy()
+        sheet_name = f"RAW_{len(raw_data_sheets) + 1:03d}"
+        raw_data_sheets[sheet_name] = chunk
+        raw_data_index_records.append({
+            "Raw Sheet": sheet_name,
+            "Source File": source_file,
+            "Source Part": source_part,
+            "Start Record": start + 1,
+            "End Record": min(start + chunk_size, total),
+            "Rows": len(chunk),
+        })
+
 # ============================================================
 # UNIVERSAL DATE PATTERNS  (all Indian bank date formats)
 # ============================================================
@@ -325,6 +602,14 @@ UNIVERSAL_DATE_PATTERNS = [
     (re.compile(r"\b(\d{2})-(\d{2})-(\d{2})\b"), "%d-%m-%y"),
     # DD/MM/YY
     (re.compile(r"\b(\d{2})/(\d{2})/(\d{2})\b"), "%d/%m/%y"),
+    # DD.MM.YY
+    (re.compile(r"\b(\d{2})\.(\d{2})\.(\d{2})\b"), "%d.%m.%y"),
+    # DD-MMM-YY / DD MMM YY / DD/MMM/YY
+    (re.compile(r"\b(\d{1,2})-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d{2})\b", re.I), "%d-%b-%y"),
+    (re.compile(r"\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{2})\b", re.I), "%d %b %y"),
+    (re.compile(r"\b(\d{1,2})/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/(\d{2})\b", re.I), "%d/%b/%y"),
+    # YYYY/MM/DD
+    (re.compile(r"\b(\d{4})/(\d{2})/(\d{2})\b"), "%Y/%m/%d"),
 ]
 
 # Date-start regex for line detection (matches beginning of line)
@@ -366,11 +651,18 @@ def parse_date_flexible(text):
 
 
 def match_date_at_line_start(line):
-    """Return the date string if the line starts with a date, else None."""
+    """Return transaction date at line start; V7.1 tolerates a leading serial number."""
+    text = str(line or "").strip()
     for pat in DATE_LINE_PATTERNS:
-        m = pat.match(line)
+        m = pat.match(text)
         if m:
             return m.group(1)
+    if ALLOW_LEADING_SERIAL_BEFORE_DATE:
+        candidate = re.sub(r"^\s*\d{1,7}\s*(?:[|.:;-]\s*)?", "", text, count=1)
+        for pat in DATE_LINE_PATTERNS:
+            m = pat.match(candidate)
+            if m:
+                return m.group(1)
     return None
 
 
@@ -405,7 +697,7 @@ def parse_number(value):
         return np.nan
     if isinstance(value, (int, float, np.integer, np.floating)):
         try:
-            return float(value)
+            return round(float(value), ROUND_DECIMALS)
         except Exception:
             return np.nan
     s = clean_text(value)
@@ -425,7 +717,7 @@ def parse_number(value):
     s = re.sub(r"\s*(DR|CR)\s*$", "", s, flags=re.I).strip()
     try:
         x = float(s)
-        return -x if negative else x
+        return round(-x if negative else x, ROUND_DECIMALS)
     except Exception:
         return np.nan
 
@@ -446,7 +738,12 @@ def alias_match(value, field):
         a = norm(alias)
         if v == a:
             return True
-        if len(a) >= 4 and (a in v or v in a):
+        # Avoid false matches such as generic "Amount" being treated as
+        # both "Debit Amount" and "Credit Amount". Prefer alias->header
+        # containment; allow reverse containment only for descriptive headers.
+        if len(a) >= 4 and a in v:
+            return True
+        if len(v) >= 8 and len(v.split()) >= 2 and v in a:
             return True
     return False
 
@@ -476,6 +773,10 @@ def is_generic_bank_header(values):
     if "date" in hits and ("debit" in hits or "credit" in hits):
         return True
     if "date" in hits and "amount" in hits and "type" in hits:
+        return True
+    # V7.1: many co-operative/digital bank exports keep DR/CR inside the
+    # Amount cells and therefore have no separate Type column.
+    if "date" in hits and "amount" in hits and ("balance" in hits or "narration" in hits):
         return True
     return False
 
@@ -747,16 +1048,24 @@ def standardize_generic_table(table):
             np.nan,
         )
 
-    # Signed amount fallback (negative = debit)
+    # Amount-column DR/CR marker fallback (e.g. "1,250.00 DR").
     if (
         debit_col is None
         and credit_col is None
         and amount_col
         and type_col is None
     ):
-        amounts = table[amount_col].apply(parse_number)
-        out["Debit"] = np.where(amounts < 0, amounts.abs(), np.nan)
-        out["Credit"] = np.where(amounts > 0, amounts, np.nan)
+        raw_amount = table[amount_col].astype(str)
+        amounts = table[amount_col].apply(parse_number).abs()
+        dr_marker = raw_amount.str.contains(r"\b(?:DR|DEBIT)\b", case=False, regex=True, na=False)
+        cr_marker = raw_amount.str.contains(r"\b(?:CR|CREDIT)\b", case=False, regex=True, na=False)
+        if bool((dr_marker | cr_marker).any()):
+            out["Debit"] = np.where(dr_marker, amounts, np.nan)
+            out["Credit"] = np.where(cr_marker, amounts, np.nan)
+        else:
+            signed_amounts = table[amount_col].apply(parse_number)
+            out["Debit"] = np.where(signed_amounts < 0, signed_amounts.abs(), np.nan)
+            out["Credit"] = np.where(signed_amounts > 0, signed_amounts, np.nan)
 
     # Best-effort customer extraction from narration
     customer_blank = (
@@ -807,56 +1116,95 @@ def standardize_generic_table(table):
 # ============================================================
 # EXCEL / CSV READER
 # ============================================================
+def _read_delimited_robust(path):
+    """Read CSV/TXT exports with delimiter/preamble/encoding tolerance."""
+    import csv
+    last_error = None
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
+        try:
+            with open(path, "r", encoding=enc, errors="strict", newline="") as f:
+                sample = f.read(65536)
+                f.seek(0)
+                # Prefer the delimiter that produces a stable multi-column structure.
+                # This avoids commas inside Indian currency values (1,25,000.00)
+                # being mistaken for CSV separators in pipe/tab exports.
+                sample_lines = [ln for ln in sample.splitlines() if ln.strip()][:200]
+                best = None
+                for cand in ("|", "\t", ";", ","):
+                    counts = [ln.count(cand) for ln in sample_lines]
+                    positive = [c for c in counts if c > 0]
+                    if not positive:
+                        continue
+                    from collections import Counter
+                    mode_count, mode_freq = Counter(positive).most_common(1)[0]
+                    coverage = mode_freq / max(len(sample_lines), 1)
+                    score = (coverage, mode_count, mode_freq)
+                    if best is None or score > best[0]:
+                        best = (score, cand)
+                delimiter = best[1] if best else ","
+                rows = list(csv.reader(f, delimiter=delimiter))
+            if not rows:
+                return [("DELIMITED", pd.DataFrame())]
+            width = max(len(r) for r in rows)
+            padded = [r + [""] * (width - len(r)) for r in rows]
+            return [("DELIMITED", pd.DataFrame(padded, dtype=str))]
+        except Exception as exc:
+            last_error = exc
+    raise last_error
+
+
 def read_excel_csv(path):
     ext = os.path.splitext(path)[1].lower()
-    if ext == ".csv":
-        last_error = None
-        for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
-            try:
-                raw = pd.read_csv(
-                    path,
-                    header=None,
-                    dtype=str,
-                    keep_default_na=False,
-                    encoding=enc,
-                    engine="python",
-                )
-                return [("CSV", raw)]
-            except Exception as e:
-                last_error = e
-        raise last_error
+    if ext in (".csv", ".txt"):
+        return _read_delimited_robust(path)
+    if ext in (".html", ".htm"):
+        tables = pd.read_html(path, header=None, keep_default_na=False)
+        return [(f"HTML_{i+1}", t.astype(str)) for i, t in enumerate(tables)]
+
     engine = "xlrd" if ext == ".xls" else "openpyxl"
-    book = pd.ExcelFile(path, engine=engine)
-    outputs = []
-    for sheet in book.sheet_names:
+    try:
+        book = pd.ExcelFile(path, engine=engine)
+        outputs = []
+        for sheet in book.sheet_names:
+            try:
+                raw = pd.read_excel(book, sheet_name=sheet, header=None, dtype=str, keep_default_na=False)
+                outputs.append((sheet, raw))
+            except Exception as exc:
+                logger.warning("Sheet '%s' skipped: %s", sheet, exc)
+        if outputs:
+            return outputs
+    except Exception as excel_exc:
+        # Many bank '.xls' downloads are actually HTML tables with an XLS extension.
         try:
-            raw = pd.read_excel(
-                book,
-                sheet_name=sheet,
-                header=None,
-                dtype=str,
-                keep_default_na=False,
-            )
-            outputs.append((sheet, raw))
-        except Exception as e:
-            print(f"    WARNING sheet '{sheet}' skipped: {e}")
-    return outputs
+            tables = pd.read_html(path, header=None, keep_default_na=False)
+            if tables:
+                logger.info("HTML-disguised Excel detected: %s", os.path.basename(path))
+                return [(f"HTML_XLS_{i+1}", t.astype(str)) for i, t in enumerate(tables)]
+        except Exception:
+            pass
+        raise excel_exc
+    return []
 
 
 # ============================================================
 # UNIVERSAL PDF TEXT PARSER  (works for ALL banks)
 # ============================================================
 def is_bank_statement_pdf(text):
-    """Check if PDF text looks like any bank statement."""
+    """Broad bank-statement fingerprint; generic unknown-bank layouts are allowed in V7.1."""
     t = clean_text(text).lower()
     bank_keywords = [
-        "bank", "statement", "account", "balance",
-        "transaction", "debit", "credit", "deposit",
-        "withdrawal", "particulars", "narration",
-        "description", "cheque", "reference",
+        "bank", "statement", "account", "balance", "transaction", "debit", "credit",
+        "deposit", "withdrawal", "particulars", "narration", "description", "cheque",
+        "reference", "opening balance", "closing balance", "ifsc", "branch",
     ]
     score = sum(1 for kw in bank_keywords if kw in t)
-    return score >= 3
+    date_present = any(p.search(t) for p, _ in UNIVERSAL_DATE_PATTERNS)
+    money_present = bool(re.search(r"\d[\d,]*\.\d{2}", t))
+    if score >= 3:
+        return True
+    if UNKNOWN_BANK_GENERIC_PARSER and score >= 2 and date_present and money_present:
+        return True
+    return False
 
 
 def signed_balance_from_line(line):
@@ -1061,6 +1409,8 @@ def parse_universal_pdf_text(path):
 
                 debit = np.nan
                 credit = np.nan
+                balance_recon_status = "UNVERIFIED"
+                balance_recon_difference = np.nan
 
                 if (
                     not is_bf
@@ -1068,31 +1418,28 @@ def parse_universal_pdf_text(path):
                     and previous_signed_balance is not None
                 ):
                     balance_change = current_balance - previous_signed_balance
+                    balance_recon_difference = abs(balance_change) - abs(amount)
                     tolerance = max(0.02, abs(amount) * 0.000001)
-                    if abs(abs(balance_change) - amount) <= tolerance:
+                    if abs(balance_recon_difference) <= tolerance:
+                        balance_recon_status = "PASS"
                         if balance_change < 0:
                             debit = amount
                         elif balance_change > 0:
                             credit = amount
                     else:
-                        # Fallback: classify by direction
-                        if balance_change < 0:
-                            debit = amount
-                        elif balance_change > 0:
-                            credit = amount
+                        # Audit-safe V7: keep direction unresolved instead of
+                        # silently forcing debit/credit when the balance does not reconcile.
+                        balance_recon_status = "CHECK"
                 elif not is_bf and amount is not None:
-                    # First transaction (no previous balance)
-                    # Try Cr/Dr suffix on the line
+                    # First transaction: use an explicit Dr/Cr marker only.
                     if re.search(r"\bDr\b", balance_line, flags=re.I):
                         debit = amount
+                        balance_recon_status = "MARKER ONLY"
                     elif re.search(r"\bCr\b", balance_line, flags=re.I):
                         credit = amount
+                        balance_recon_status = "MARKER ONLY"
                     else:
-                        # Guess from balance vs amount
-                        if current_balance < amount:
-                            debit = amount
-                        else:
-                            credit = amount
+                        balance_recon_status = "UNRESOLVED"
 
                 previous_signed_balance = current_balance
 
@@ -1107,6 +1454,8 @@ def parse_universal_pdf_text(path):
                     "Debit": debit,
                     "Credit": credit,
                     "Balance": current_balance,
+                    "Balance Reconciliation Status": balance_recon_status,
+                    "Balance Reconciliation Difference": balance_recon_difference,
                     "Customer Source": (
                         "PDF NAME LINE / NARRATION"
                         if customer else "NOT AVAILABLE"
@@ -1267,6 +1616,33 @@ def detect_bank_from_filename(filename):
         "Indian Overseas Bank": ["iob", "indian overseas"],
         "Bank of India": ["bank of india", "boi"],
     }
+    aliases.update({
+        "IDFC FIRST Bank": ["idfc first", "idfcfirst"],
+        "Indian Bank": ["indian bank"],
+        "Central Bank of India": ["central bank"],
+        "UCO Bank": ["uco"],
+        "Bank of Maharashtra": ["bank of maharashtra", "bom"],
+        "Punjab & Sind Bank": ["punjab sind", "punjab and sind", "psb"],
+        "City Union Bank": ["city union", "cub"],
+        "Tamilnad Mercantile Bank": ["tamilnad mercantile", "tmb"],
+        "South Indian Bank": ["south indian", "sib"],
+        "Karnataka Bank": ["karnataka bank"],
+        "DCB Bank": ["dcb"],
+        "CSB Bank": ["csb", "catholic syrian"],
+        "Dhanlaxmi Bank": ["dhanlaxmi"],
+        "Jammu & Kashmir Bank": ["jammu kashmir", "j k bank", "jk bank"],
+        "Ujjivan Small Finance Bank": ["ujjivan"],
+        "Equitas Small Finance Bank": ["equitas"],
+        "ESAF Small Finance Bank": ["esaf"],
+        "Capital Small Finance Bank": ["capital sfb"],
+        "Unity Small Finance Bank": ["unity sfb"],
+        "Shivalik Small Finance Bank": ["shivalik"],
+        "Airtel Payments Bank": ["airtel payments", "airtel bank"],
+        "India Post Payments Bank": ["ippb", "india post payments"],
+        "Fino Payments Bank": ["fino payments", "fino bank"],
+        "Jio Payments Bank": ["jio payments", "jio bank"],
+        "NSDL Payments Bank": ["nsdl payments", "nsdl bank"],
+    })
     for bank, keys in aliases.items():
         if any(k in n for k in keys):
             return bank
@@ -1389,256 +1765,250 @@ def explicit_gst_component(narration):
 def calculate_confidence(row):
     score = 0
     reasons = []
+
     if pd.notna(row.get("Date")):
-        score += 20
+        score += 15
     else:
         reasons.append("Missing date")
+
     if pd.notna(row.get("Transaction Amount")):
         score += 20
     else:
         reasons.append("Missing amount")
+
     if clean_text(row.get("Direction")) in ("DEBIT", "CREDIT"):
-        score += 20
+        score += 15
     else:
         reasons.append("Direction unresolved")
+
     if clean_text(row.get("UTR / Reference")):
         score += 15
     else:
         reasons.append("Missing UTR/reference")
+
     if clean_text(row.get("Customer Name")):
         score += 10
     else:
         reasons.append("Missing customer")
+
     if pd.notna(row.get("Balance")):
         score += 10
+
+    recon = clean_text(row.get("Balance Reconciliation Status")).upper()
+    if recon == "PASS":
+        score += 10
+    elif recon == "CHECK":
+        reasons.append("Balance movement mismatch")
+    elif recon in ("UNRESOLVED", "UNVERIFIED"):
+        reasons.append("Balance reconciliation unavailable")
+
     if clean_text(row.get("Possible Duplicate")) != "YES":
         score += 5
     else:
         reasons.append("Possible duplicate")
-    return score, "; ".join(reasons)
+
+    return min(score, 100), "; ".join(dict.fromkeys(reasons))
+
+def add_format_diagnostic(source_file, source_part, status, sample_text="", header_hits_value="", note=""):
+    if not DIAGNOSTIC_MODE:
+        return
+    sample = clean_text(sample_text)[:1500]
+    format_diagnostic_records.append({
+        "Source File": source_file,
+        "Source Part": source_part,
+        "Status": status,
+        "Detected Bank": detect_bank_from_text(sample_text) if sample_text else detect_bank_from_filename(source_file),
+        "Header Hits": header_hits_value,
+        "Sample / First Content": sample,
+        "Note": note,
+    })
+
 
 # ============================================================
-# LOAD SOURCES
+# LOAD SOURCES — V7.1 AUDIT / RAW / ROW-CONTROL
 # ============================================================
 all_frames = []
 source_map = []
 all_pdf_recon = []
 
-print("=" * 82)
-print(f"UNIVERSAL BANK BOOKS REPORT {VERSION}")
-print(f"Author: {AUTHOR_NAME}")
-print("=" * 82)
-print("Folder:", BASE_DIR)
-print("Source files found:", len(input_files))
-print("")
+logger.info("=" * 82)
+logger.info("UNIVERSAL BANK BOOKS REPORT %s", VERSION)
+logger.info("Author: %s", AUTHOR_NAME)
+logger.info("Folder: %s", BASE_DIR)
+logger.info("Source files found: %s", len(input_files))
 
 for path in input_files:
     base = os.path.basename(path)
     ext = os.path.splitext(path)[1].lower()
-    print("Reading:", base)
+    logger.info("Reading: %s", base)
 
-    # --------------------------------------------------------
-    # PDF
-    # --------------------------------------------------------
     if ext == ".pdf":
         try:
             first_text = get_first_pdf_page_text(path)
-        except Exception as e:
-            print("  ERROR reading PDF:", e)
-            source_map.append({
-                "Source File": base,
-                "Source Part": "",
-                "Status": "READ ERROR",
-                "Transaction Count": 0,
-                "Note": str(e),
-            })
+        except Exception as exc:
+            source_map.append({"Source File": base, "Source Part": "PDF", "Status": "READ ERROR", "Transaction Count": 0, "Note": str(exc)})
+            log_exception("PDF Read Error", exc, base, "PDF")
             continue
 
         detected_bank = detect_bank_from_text(first_text)
-        print(f"  Detected bank: {detected_bank}")
+        logger.info("  Detected bank: %s", detected_bank)
 
         if not is_bank_statement_pdf(first_text):
-            source_map.append({
-                "Source File": base,
-                "Source Part": "PDF",
-                "Status": "NOT A BANK STATEMENT",
-                "Transaction Count": 0,
-                "Note": "PDF does not appear to be a bank statement.",
-            })
-            print("  WARNING: PDF does not look like a bank statement.")
+            source_map.append({"Source File": base, "Source Part": "PDF", "Status": "NOT A BANK STATEMENT", "Transaction Count": 0, "Note": "PDF does not appear to be a bank statement."})
+            log_exception("Not Bank Statement", "PDF did not meet bank-statement fingerprint threshold", base, "PDF")
+            add_format_diagnostic(base, "PDF", "FINGERPRINT REVIEW", first_text, note="Bank-statement fingerprint was weak; inspect first-page text.")
+            row_control_seed.append({"Source File": base, "Source Part": "PDF", "Source Rows": 0, "Candidate Data Rows": 0, "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": 0, "Output Rows": 0, "Status": "REVIEW", "Note": "Not recognized as a bank statement"})
             continue
 
-        # Try universal text parser first
         try:
             pdf_tx, pdf_recon = parse_universal_pdf_text(path)
-        except Exception as e:
-            print(f"  ERROR in universal PDF parser: {e}")
+        except Exception as exc:
+            log_exception("PDF Parse Error", traceback.format_exc(), base, "UNIVERSAL PDF TEXT")
+            logger.error("  Universal PDF parser failed: %s", exc)
             pdf_tx = pd.DataFrame()
             pdf_recon = pd.DataFrame()
 
         if not pdf_tx.empty:
             pdf_tx["Source File"] = base
-            pdf_tx["Source Part"] = (
-                "Page " + pdf_tx["Source Page"].astype(str)
-            )
+            pdf_tx["Source Part"] = "Page " + pdf_tx["Source Page"].astype(str)
             pdf_tx["Source Row"] = ""
             all_frames.append(pdf_tx)
-            pdf_recon["Source File"] = base
-            all_pdf_recon.append(pdf_recon)
-            bad_pages = int(pdf_recon["Status"].eq("CHECK").sum())
+
+            if not pdf_recon.empty:
+                pdf_recon["Source File"] = base
+                all_pdf_recon.append(pdf_recon)
+                bad_pages = int(pdf_recon["Status"].eq("CHECK").sum())
+            else:
+                bad_pages = 0
+
+            if PRESERVE_RAW_DATA:
+                store_raw_data(pdf_tx.copy(), base, "PDF_PARSED_TRANSACTIONS")
+
             source_map.append({
                 "Source File": base,
                 "Source Part": f"UNIVERSAL PDF ({detected_bank})",
-                "Status": (
-                    "RECOGNIZED"
-                    if bad_pages == 0
-                    else "RECOGNIZED / RECON CHECK"
-                ),
+                "Status": "RECOGNIZED" if bad_pages == 0 else "RECOGNIZED / RECON CHECK",
                 "Transaction Count": len(pdf_tx),
                 "Note": f"Page reconciliation issues: {bad_pages}",
             })
-            print(
-                f"  Universal PDF parser: "
-                f"{len(pdf_tx):,} transaction(s)"
-            )
-            print(
-                f"  Debit total : "
-                f"{pdf_tx['Debit'].fillna(0).sum():,.2f}"
-            )
-            print(
-                f"  Credit total: "
-                f"{pdf_tx['Credit'].fillna(0).sum():,.2f}"
-            )
-            print(
-                f"  PDF page reconciliation CHECK pages: "
-                f"{bad_pages}"
-            )
+            row_control_seed.append({
+                "Source File": base,
+                "Source Part": "UNIVERSAL PDF TEXT",
+                "Source Rows": len(pdf_tx),
+                "Candidate Data Rows": len(pdf_tx),
+                "Imported Rows": len(pdf_tx),
+                "Processed Rows": len(pdf_tx),
+                "Rejected Rows": 0,
+                "Output Rows": len(pdf_tx),
+                "Status": "PASS" if bad_pages == 0 else "REVIEW",
+                "Note": f"PDF page reconciliation CHECK count: {bad_pages}",
+            })
+            parser_recon_records.append({
+                "Source File": base,
+                "Parser": "UNIVERSAL PDF TEXT + BALANCE RECON",
+                "Transactions": len(pdf_tx),
+                "Debit Total": float(pdf_tx["Debit"].fillna(0).sum()),
+                "Credit Total": float(pdf_tx["Credit"].fillna(0).sum()),
+                "PDF CHECK Pages": bad_pages,
+                "Status": "PASS" if bad_pages == 0 else "REVIEW",
+            })
+            logger.info("  Universal PDF parser: %s transaction(s)", f"{len(pdf_tx):,}")
             continue
 
-        # Fallback: generic PDF table extraction
-        print("  Text parser found no transactions. Trying table extraction...")
+        logger.info("  Text parser found no transactions. Trying PDF table extraction / OCR.")
         try:
             pdf_sources = extract_pdf_tables(path)
-        except Exception as e:
-            print("  ERROR extracting PDF tables:", e)
+        except Exception as exc:
             pdf_sources = []
+            log_exception("PDF Table Extract Error", traceback.format_exc(), base, "PDF TABLE")
+            logger.error("  PDF table extraction failed: %s", exc)
 
-        if not pdf_sources:
+        if not pdf_sources and OCR_ENABLED:
             pdf_sources = ocr_pdf_optional(path)
 
         recognized_pdf = False
         for source_name, raw, page_no in pdf_sources:
+            if PRESERVE_RAW_DATA:
+                store_raw_data(raw.copy(), base, source_name)
+
             header_row = locate_generic_header(raw)
             if header_row is None:
+                sample = " | ".join(clean_text(x) for x in raw.head(8).fillna("").astype(str).values.flatten().tolist())
+                add_format_diagnostic(base, source_name, "NO HEADER", sample, note="PDF table/OCR extracted but no supported header was detected.")
+                row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": 0, "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": 0, "Output Rows": 0, "Status": "REVIEW", "Note": "No bank header detected"})
                 continue
+
             table = dataframe_from_header(raw, header_row)
             tx = standardize_generic_table(table)
             if tx.empty:
+                row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": len(table), "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": len(table), "Output Rows": 0, "Status": "REVIEW", "Note": "Header detected but no transactions"})
                 continue
+
             tx["Source File"] = base
             tx["Source Part"] = source_name
-            tx["Source Row"] = (
-                tx.index.to_series().astype(int)
-                + header_row + 2
-            ).values
+            tx["Source Row"] = (tx.index.to_series().astype(int) + header_row + 2).values
             tx["Source Page"] = page_no
-            tx["Parser"] = "GENERIC PDF TABLE"
+            tx["Parser"] = "GENERIC PDF TABLE / OCR"
             all_frames.append(tx)
             recognized_pdf = True
-            source_map.append({
-                "Source File": base,
-                "Source Part": source_name,
-                "Status": "RECOGNIZED",
-                "Transaction Count": len(tx),
-                "Note": f"Bank: {detected_bank}",
-            })
-            print(f"  {source_name}: {len(tx):,} transaction(s)")
+            source_map.append({"Source File": base, "Source Part": source_name, "Status": "RECOGNIZED", "Transaction Count": len(tx), "Note": f"Bank: {detected_bank}; header row: {header_row + 1}"})
+            row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": len(table), "Imported Rows": len(tx), "Processed Rows": len(tx), "Rejected Rows": max(len(table) - len(tx), 0), "Output Rows": len(tx), "Status": "PASS", "Note": "Generic PDF table/OCR parser"})
+            parser_recon_records.append({"Source File": base, "Parser": "GENERIC PDF TABLE / OCR", "Transactions": len(tx), "Debit Total": float(tx["Debit"].fillna(0).sum()), "Credit Total": float(tx["Credit"].fillna(0).sum()), "PDF CHECK Pages": "", "Status": "PASS"})
 
         if not recognized_pdf:
-            source_map.append({
-                "Source File": base,
-                "Source Part": "PDF",
-                "Status": "UNRECOGNIZED",
-                "Transaction Count": 0,
-                "Note": (
-                    f"Bank detected: {detected_bank}. "
-                    "No reliable transaction table recognized. "
-                    "If image-only PDF, install OCR dependencies "
-                    "or export as searchable PDF/Excel."
-                ),
-            })
-            print(
-                "  WARNING: no reliable transaction rows "
-                "recognized from PDF."
-            )
+            source_map.append({"Source File": base, "Source Part": "PDF", "Status": "UNRECOGNIZED", "Transaction Count": 0, "Note": f"Bank detected: {detected_bank}. No reliable transaction table recognized."})
+            log_exception("Unrecognized PDF Format", "No reliable transaction rows recognized", base, "PDF")
+            add_format_diagnostic(base, "PDF", "UNRECOGNIZED", first_text, note="Text, table and OCR parsers did not produce reliable transactions.")
         continue
 
-    # --------------------------------------------------------
     # EXCEL / CSV
-    # --------------------------------------------------------
     try:
         sources = read_excel_csv(path)
-    except Exception as e:
-        print("  ERROR:", e)
-        source_map.append({
-            "Source File": base,
-            "Source Part": "",
-            "Status": "READ ERROR",
-            "Transaction Count": 0,
-            "Note": str(e),
-        })
+    except Exception as exc:
+        source_map.append({"Source File": base, "Source Part": "", "Status": "READ ERROR", "Transaction Count": 0, "Note": str(exc)})
+        log_exception("File Read Error", traceback.format_exc(), base, "")
         continue
 
     recognized_file = False
     for source_name, raw in sources:
+        if PRESERVE_RAW_DATA:
+            store_raw_data(raw.copy(), base, source_name)
+
         header_row = locate_generic_header(raw)
         if header_row is None:
+            sample = " | ".join(clean_text(x) for x in raw.head(8).fillna("").astype(str).values.flatten().tolist())
+            add_format_diagnostic(base, source_name, "NO HEADER", sample, note="Excel/CSV/HTML/TXT source read successfully but no supported header was detected.")
+            row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": 0, "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": 0, "Output Rows": 0, "Status": "REVIEW", "Note": "No bank header detected"})
             continue
+
         table = dataframe_from_header(raw, header_row)
         tx = standardize_generic_table(table)
         if tx.empty:
+            row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": len(table), "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": len(table), "Output Rows": 0, "Status": "REVIEW", "Note": "Header detected but no transactions"})
             continue
+
         tx["Source File"] = base
         tx["Source Part"] = source_name
-        tx["Source Row"] = (
-            tx.index.to_series().astype(int)
-            + header_row + 2
-        ).values
+        tx["Source Row"] = (tx.index.to_series().astype(int) + header_row + 2).values
         tx["Source Page"] = ""
         tx["Parser"] = "GENERIC EXCEL/CSV"
         all_frames.append(tx)
         recognized_file = True
-        source_map.append({
-            "Source File": base,
-            "Source Part": source_name,
-            "Status": "RECOGNIZED",
-            "Transaction Count": len(tx),
-            "Note": f"Header row: {header_row + 1}",
-        })
-        print(f"  {source_name}: {len(tx):,} transaction(s)")
+        source_map.append({"Source File": base, "Source Part": source_name, "Status": "RECOGNIZED", "Transaction Count": len(tx), "Note": f"Header row: {header_row + 1}"})
+        row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": len(table), "Imported Rows": len(tx), "Processed Rows": len(tx), "Rejected Rows": max(len(table) - len(tx), 0), "Output Rows": len(tx), "Status": "PASS", "Note": f"Header row: {header_row + 1}"})
+        parser_recon_records.append({"Source File": base, "Parser": "GENERIC EXCEL/CSV", "Transactions": len(tx), "Debit Total": float(tx["Debit"].fillna(0).sum()), "Credit Total": float(tx["Credit"].fillna(0).sum()), "PDF CHECK Pages": "", "Status": "PASS"})
+        logger.info("  %s: %s transaction(s)", source_name, f"{len(tx):,}")
 
     if not recognized_file:
-        source_map.append({
-            "Source File": base,
-            "Source Part": "",
-            "Status": "UNRECOGNIZED",
-            "Transaction Count": 0,
-            "Note": (
-                "Expected Date + Debit/Credit, "
-                "or Date + Amount + DR/CR."
-            ),
-        })
+        source_map.append({"Source File": base, "Source Part": "", "Status": "UNRECOGNIZED", "Transaction Count": 0, "Note": "Expected Date + Debit/Credit, or Date + Amount + DR/CR."})
+        log_exception("Unrecognized Format", "No supported bank header found", base, "")
+        add_format_diagnostic(base, "", "UNRECOGNIZED", note="No supported header found in any source part.")
 
 if not all_frames:
     raise ValueError(
-        "\nNo bank transactions were recognized.\n"
-        "For Excel/CSV expected something similar to:\n"
-        "Date | Narration | Debit | Credit | Balance\n"
-        "or Date | Amount | Type (DR/CR).\n\n"
-        "For PDFs, searchable/text bank statements work best.\n"
-        "Supported banks: SBI, HDFC, ICICI, Axis, Kotak, PNB, "
-        "BOB, Canara, Union, IDBI, Yes, IndusInd, Federal, RBL, "
-        "and more.\n"
+        "\\nNo bank transactions were recognized.\\n"
+        "Expected Date + Debit/Credit or Date + Amount + DR/CR.\\n"
+        "Searchable/text PDFs are preferred; OCR is optional for scanned PDFs."
     )
 
 # ============================================================
@@ -1651,6 +2021,7 @@ for required_col in [
     "Debit", "Credit", "Balance", "Customer Source",
     "UTR Source", "Source File", "Source Part",
     "Source Row", "Source Page", "Parser",
+    "Balance Reconciliation Status", "Balance Reconciliation Difference",
 ]:
     if required_col not in transactions.columns:
         transactions[required_col] = ""
@@ -1716,8 +2087,8 @@ transactions["Confidence Score"] = confidence_values.apply(lambda x: x[0])
 transactions["Review Reason"] = confidence_values.apply(lambda x: x[1])
 transactions["Review Status"] = np.select(
     [
-        transactions["Confidence Score"] >= 85,
-        transactions["Confidence Score"] >= 65,
+        transactions["Confidence Score"] >= REVIEW_OK_THRESHOLD,
+        transactions["Confidence Score"] >= REVIEW_MIN_THRESHOLD,
     ],
     ["OK", "REVIEW"],
     default="CRITICAL REVIEW",
@@ -1726,6 +2097,52 @@ transactions["Review Status"] = np.select(
 review_required = transactions[
     transactions["Review Status"].ne("OK")
     | transactions["Possible Duplicate"].eq("YES")
+].copy()
+
+
+# V7 row-count control: transparent source/candidate/import/output accounting.
+row_control_df = pd.DataFrame(row_control_seed)
+if not row_control_df.empty:
+    duplicate_by_file = transactions.groupby("Source File")["Possible Duplicate"].apply(lambda s: int(s.eq("YES").sum())).to_dict()
+    review_by_file = transactions.groupby("Source File")["Review Status"].apply(lambda s: int(s.ne("OK").sum())).to_dict()
+    row_control_df["Duplicate Flagged"] = row_control_df["Source File"].map(duplicate_by_file).fillna(0).astype(int)
+    row_control_df["Review Flagged"] = row_control_df["Source File"].map(review_by_file).fillna(0).astype(int)
+    row_control_df["Difference"] = row_control_df["Imported Rows"] - row_control_df["Processed Rows"]
+    row_control_df["Status"] = np.where(
+        (row_control_df["Status"] == "PASS") & (row_control_df["Difference"] == 0),
+        "PASS",
+        row_control_df["Status"],
+    )
+else:
+    row_control_df = pd.DataFrame(columns=[
+        "Source File", "Source Part", "Source Rows", "Candidate Data Rows",
+        "Imported Rows", "Processed Rows", "Rejected Rows", "Output Rows",
+        "Duplicate Flagged", "Review Flagged", "Difference", "Status", "Note",
+    ])
+
+parser_reconciliation = pd.DataFrame(parser_recon_records)
+raw_data_index = pd.DataFrame(raw_data_index_records)
+
+# Safe PG/GST validation: disabled by default for bank statements.
+if PG_VALIDATION_ENABLED:
+    pg_gst_validation = transactions[[
+        "Date", "Source File", "UTR / Reference", "Customer Name",
+        "Transaction Amount", "Narration"
+    ]].copy()
+    pg_gst_validation["Expected PG Charge"] = (pg_gst_validation["Transaction Amount"] * PG_CHARGE_RATE).round(ROUND_DECIMALS)
+    pg_gst_validation["Expected GST"] = (pg_gst_validation["Expected PG Charge"] * GST_RATE).round(ROUND_DECIMALS)
+    pg_gst_validation["Validation Status"] = "MODEL ONLY - REQUIRES PG EVIDENCE"
+else:
+    pg_gst_validation = pd.DataFrame([{
+        "Validation Status": "DISABLED",
+        "Note": "Bank statements do not by themselves prove a payment-gateway charge. Set pg_validation_enabled: true only for a controlled PG-validation workflow.",
+    }])
+
+refund_chargeback_review = transactions[
+    transactions["Narration"].fillna("").astype(str).str.contains(
+        r"REFUND|REVERSAL|REVERSED|RETURN|CHARGEBACK|CHARGE BACK|DISPUTE",
+        case=False, regex=True, na=False,
+    )
 ].copy()
 
 # Account-wise summary
@@ -2099,6 +2516,39 @@ def write_df(ws, frame, money_cols=(), date_cols=(), count_cols=()):
     auto_width(ws)
 
 
+def write_df_split(wb, frame, sheet_base, money_cols=(), date_cols=(), count_cols=()):
+    """Write safely within Excel row/name limits. Returns created sheet names."""
+    used = {ws.title.lower() for ws in wb.worksheets}
+    base = sanitize_sheet_name(sheet_base)
+    if frame is None or frame.empty:
+        name = sanitize_sheet_name(base, used)
+        ws = wb.create_sheet(name)
+        ws["A1"] = "No data available"
+        return [name]
+
+    chunk_size = min(MAX_ROWS_PER_SHEET, 1048575)
+    created = []
+    if len(frame) <= chunk_size:
+        name = sanitize_sheet_name(base, used)
+        ws = wb.create_sheet(name)
+        write_df(ws, frame, money_cols, date_cols, count_cols)
+        return [name]
+
+    index_records = []
+    for n, start in enumerate(range(0, len(frame), chunk_size), start=1):
+        chunk = frame.iloc[start:start + chunk_size]
+        name = sanitize_sheet_name(f"{base}_{n:03d}", used)
+        ws = wb.create_sheet(name)
+        write_df(ws, chunk, money_cols, date_cols, count_cols)
+        created.append(name)
+        index_records.append([name, start + 1, min(start + chunk_size, len(frame)), len(chunk)])
+
+    index_name = sanitize_sheet_name(f"{base}_INDEX", used)
+    ws = wb.create_sheet(index_name)
+    write_df(ws, pd.DataFrame(index_records, columns=["Sheet Name", "Start Record", "End Record", "Rows"]), count_cols=("Start Record", "End Record", "Rows"))
+    return created
+
+
 # ============================================================
 # COVER_REPORT
 # ============================================================
@@ -2182,15 +2632,16 @@ register_columns = [
     "Date", "Bank Name", "Account Key", "Account Number",
     "Customer Name", "UTR / Reference", "Narration",
     "Transaction Type", "Debit", "Credit", "Balance", "Direction",
-    "Transaction Amount", "Confidence Score", "Review Status", "Review Reason",
+    "Transaction Amount", "Balance Reconciliation Status", "Balance Reconciliation Difference",
+    "Confidence Score", "Review Status", "Review Reason",
     "Customer Source", "UTR Source", "Possible Duplicate", "Parser", "Source File",
     "Source Part", "Source Page", "Source Row",
 ]
-ws = wb.create_sheet("TRANSACTION_REGISTER")
-write_df(
-    ws,
+write_df_split(
+    wb,
     transactions[register_columns],
-    money_cols=("Debit", "Credit", "Balance", "Transaction Amount"),
+    "TRANSACTION_REGISTER",
+    money_cols=("Debit", "Credit", "Balance", "Transaction Amount", "Balance Reconciliation Difference"),
     date_cols=("Date",),
 )
 
@@ -2201,24 +2652,18 @@ write_df(
 review_columns = [
     "Date", "Bank Name", "Account Key", "Customer Name", "UTR / Reference",
     "Narration", "Debit", "Credit", "Balance", "Direction", "Transaction Amount",
+    "Balance Reconciliation Status", "Balance Reconciliation Difference",
     "Confidence Score", "Review Status", "Review Reason", "Possible Duplicate",
     "Source File", "Source Part", "Source Page", "Source Row",
 ]
-ws = wb.create_sheet("REVIEW_REQUIRED")
-write_df(
-    ws,
+write_df_split(
+    wb,
     review_required[review_columns] if not review_required.empty else review_required,
-    money_cols=("Debit", "Credit", "Balance", "Transaction Amount"),
+    "REVIEW_REQUIRED",
+    money_cols=("Debit", "Credit", "Balance", "Transaction Amount", "Balance Reconciliation Difference"),
     date_cols=("Date",),
     count_cols=("Confidence Score",),
 )
-if not review_required.empty:
-    status_col = review_columns.index("Review Status") + 1
-    for r in range(2, ws.max_row + 1):
-        status = ws.cell(r, status_col).value
-        if status == "CRITICAL REVIEW":
-            for c in range(1, ws.max_column + 1):
-                ws.cell(r, c).fill = WARN_FILL
 
 # ============================================================
 # DATE_WISE_SUMMARY
@@ -2439,6 +2884,113 @@ write_df(
 )
 
 # ============================================================
+# V7 — ROW_COUNT_CONTROL
+# ============================================================
+write_df_split(
+    wb, row_control_df, "ROW_COUNT_CONTROL",
+    count_cols=("Source Rows", "Candidate Data Rows", "Imported Rows", "Processed Rows", "Rejected Rows", "Output Rows", "Duplicate Flagged", "Review Flagged", "Difference"),
+)
+
+# ============================================================
+# V7 — SOURCE_RAW_INDEX + RAW SOURCE SHEETS
+# ============================================================
+write_df_split(wb, raw_data_index, "SOURCE_RAW_INDEX", count_cols=("Start Record", "End Record", "Rows"))
+for raw_sheet_name, raw_df in raw_data_sheets.items():
+    # RAW sheet names are generated as short safe names.
+    write_df_split(wb, raw_df, raw_sheet_name)
+
+# ============================================================
+# V7 — PARSER_RECONCILIATION
+# ============================================================
+write_df_split(
+    wb, parser_reconciliation, "PARSER_RECONCILIATION",
+    money_cols=("Debit Total", "Credit Total"),
+    count_cols=("Transactions", "PDF CHECK Pages"),
+)
+
+# ============================================================
+# V7.1 — FORMAT_DIAGNOSTICS
+# ============================================================
+format_diagnostics_df = pd.DataFrame(format_diagnostic_records) if format_diagnostic_records else pd.DataFrame(columns=[
+    "Source File", "Source Part", "Status", "Detected Bank", "Header Hits", "Sample / First Content", "Note"
+])
+write_df_split(wb, format_diagnostics_df, "FORMAT_DIAGNOSTICS")
+
+# V7.1 — BANK_SUPPORT_MATRIX
+bank_support_matrix = pd.DataFrame([
+    {"Bank / Category": bank, "Detection": "BUILT-IN", "Parsing": "GENERIC + PDF TEXT/TABLE", "Notes": "Layout may still require review if scanned/protected/non-tabular."}
+    for bank in sorted(BANK_SIGNATURES.keys())
+] + [
+    {"Bank / Category": "Other Indian bank / co-operative bank", "Detection": "GENERIC", "Parsing": "HEADER ALIAS + DATE/AMOUNT/BALANCE", "Notes": "Works when standard transaction fields are extractable; FORMAT_DIAGNOSTICS captures unsupported layouts."}
+])
+write_df_split(wb, bank_support_matrix, "BANK_SUPPORT_MATRIX")
+
+# ============================================================
+# V7 — EXCEPTIONS
+# ============================================================
+exceptions_df = pd.DataFrame(exceptions_list) if exceptions_list else pd.DataFrame(columns=[
+    "Exception Type", "Description", "Source File", "Source Part", "Source Row", "Timestamp"
+])
+write_df_split(wb, exceptions_df, "EXCEPTIONS")
+
+# ============================================================
+# V7 — CONFIG_USED
+# ============================================================
+config_rows = []
+for key, value in CONFIG.items():
+    if key == "column_aliases":
+        for field, aliases in value.items():
+            config_rows.append({"Setting": f"column_aliases.{field}", "Value": " | ".join(map(str, aliases))})
+    else:
+        config_rows.append({"Setting": key, "Value": str(value)})
+config_rows.append({"Setting": "config_file", "Value": CONFIG_FILE})
+config_rows.append({"Setting": "run_id", "Value": RUN_ID})
+write_df_split(wb, pd.DataFrame(config_rows), "CONFIG_USED")
+
+# ============================================================
+# V7 — AUDIT_LOG
+# ============================================================
+audit_log_df = pd.DataFrame([
+    ["Run ID", RUN_ID],
+    ["Generated On", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+    ["Author", AUTHOR_NAME],
+    ["Version", DISPLAY_VERSION],
+    ["Config File", CONFIG_FILE],
+    ["Audit Log File", LOG_FILE],
+    ["Source Files", len(input_files)],
+    ["Transactions", len(transactions)],
+    ["Review Required", len(review_required)],
+    ["Raw Preservation", PRESERVE_RAW_DATA],
+    ["PG Validation Enabled", PG_VALIDATION_ENABLED],
+], columns=["Metric", "Value"])
+write_df_split(wb, audit_log_df, "AUDIT_LOG")
+
+# ============================================================
+# V7 — PG_GST_VALIDATION (SAFE / CONFIG-CONTROLLED)
+# ============================================================
+write_df_split(
+    wb, pg_gst_validation, "PG_GST_VALIDATION",
+    money_cols=("Transaction Amount", "Expected PG Charge", "Expected GST"),
+    date_cols=("Date",),
+)
+
+# ============================================================
+# V7 — REFUND_CHARGEBACK_REVIEW (ACTUAL NARRATION ONLY)
+# ============================================================
+refund_cols = [c for c in [
+    "Date", "Bank Name", "Account Key", "Customer Name", "UTR / Reference",
+    "Narration", "Debit", "Credit", "Balance", "Transaction Amount",
+    "Source File", "Source Part", "Source Page", "Source Row"
+] if c in refund_chargeback_review.columns]
+write_df_split(
+    wb,
+    refund_chargeback_review[refund_cols] if not refund_chargeback_review.empty else refund_chargeback_review,
+    "REFUND_CHARGEBACK_REVIEW",
+    money_cols=("Debit", "Credit", "Balance", "Transaction Amount"),
+    date_cols=("Date",),
+)
+
+# ============================================================
 # REPORT_NOTES
 # ============================================================
 ws = wb.create_sheet("REPORT_NOTES")
@@ -2455,14 +3007,14 @@ notes = [
         "transaction report.",
     ],
     [
-        "V6 Universal Bank Support",
+        "V7.1 India-wide Bank Support",
         "Supports ALL major Indian banks: SBI, HDFC, ICICI, "
         "Axis, Kotak, PNB, BOB, Canara, Union, IDBI, Yes, "
         "IndusInd, Federal, RBL, Bandhan, AU Small Finance, "
         "and any bank producing standard tabular statements.",
     ],
     [
-        "V6 PDF Parser",
+        "V7.1 PDF Parser",
         "Universal PDF text parser handles all date formats "
         "(DD-MM-YYYY, DD/MM/YYYY, DD-MMM-YYYY, YYYY-MM-DD, "
         "etc.) and uses running balance movement to determine "
@@ -2505,7 +3057,7 @@ notes = [
         "automatically removed.",
     ],
     [
-        "V6 Audit Controls",
+        "V7 Audit Controls",
         "Adds account profile, confidence scoring, review queue, transaction-type classification, bank charges/GST review, UTR duplicate controls, account-level reconciliation and data-quality metrics.",
     ],
     [
@@ -2522,7 +3074,31 @@ notes = [
     ],
     [
         "Supported Files",
-        "XLSX, XLS, CSV and PDF (text-based preferred).",
+        "XLSX, XLS, CSV, PDF, HTML/HTM and delimited TXT. Text-based PDFs are preferred; OCR is optional for scanned PDFs.",
+    ],
+    [
+        "V7.1 Config",
+        "config.yaml is validated at startup. Custom aliases extend built-in aliases rather than replacing them.",
+    ],
+    [
+        "V7 Row Control",
+        "ROW_COUNT_CONTROL records source rows, candidate rows, imported/processed/output rows, rejected rows and review flags without treating metadata/header rows as missing transactions.",
+    ],
+    [
+        "V7 Raw Traceability",
+        "When preserve_raw_data is true, source tables and parsed PDF transactions are preserved in split RAW_### sheets with SOURCE_RAW_INDEX.",
+    ],
+    [
+        "V7 PG/GST Safety",
+        "PG validation is disabled by default. Ordinary bank transactions are never automatically charged 0.8% + GST merely because rates exist in config.yaml.",
+    ],
+    [
+        "V7.1 Format Diagnostics",
+        "Unknown or unusual layouts are recorded in FORMAT_DIAGNOSTICS rather than silently discarded. BANK_SUPPORT_MATRIX lists built-in bank fingerprints plus generic/co-operative-bank support.",
+    ],
+    [
+        "Coverage Limitation",
+        "No software can guarantee every bank statement layout. Password-protected, corrupt, image-only or highly non-tabular statements may require OCR/manual review. V7.1 is designed for maximum Indian-bank coverage with audit-safe fallbacks.",
     ],
     [
         "Generated On",
@@ -2567,7 +3143,14 @@ print(f"Copyright    : {AUTHOR_COPYRIGHT}")
 print(f"Instagram    : {AUTHOR_INSTAGRAM}")
 print("")
 print("Saving:", OUTPUT_FILE)
+wb.properties.creator = AUTHOR_NAME
+wb.properties.lastModifiedBy = AUTHOR_NAME
+wb.properties.title = f"Universal Bank Books Report {DISPLAY_VERSION}"
+wb.properties.subject = "Bank Statement Books of Accounts / Audit Control Report"
+wb.properties.description = f"Prepared by {AUTHOR_NAME} | Instagram: {AUTHOR_INSTAGRAM} | Run ID: {RUN_ID}"
+logger.info("Saving workbook: %s", OUTPUT_FILE)
 wb.save(OUTPUT_FILE)
+logger.info("SUCCESS: %s", OUTPUT_FILE)
 print("SUCCESS")
 print("Output:", OUTPUT_FILE)
 print("=" * 82)
