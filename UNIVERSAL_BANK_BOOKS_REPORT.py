@@ -19,8 +19,8 @@ Supports ALL major Indian bank statement formats:
 File types:  .xlsx  .xls  .csv  .pdf  .html  .htm  .txt
 
 Outputs:
-  BOOKS_OF_ACCOUNTS_V7_3.xlsx
-  BANK_AUDIT_TECHNICAL_V7_3.xlsx
+  BOOKS_OF_ACCOUNTS_V7_3_2.xlsx
+  BANK_AUDIT_TECHNICAL_V7_3_2.xlsx
 
 Sheets:
   COVER_REPORT
@@ -63,7 +63,7 @@ Optional OCR:
   python -m pip install pytesseract pdf2image pillow
 
 RUN
-  python UNIVERSAL_BANK_BOOKS_REPORT_V7_3.py
+  python UNIVERSAL_BANK_BOOKS_REPORT_V7_3_2.py
 """
 
 import os
@@ -86,16 +86,16 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V7_3"
-DISPLAY_VERSION = "V7.3"
+VERSION = "V7_3_2"
+DISPLAY_VERSION = "V7.3.2"
 
 # ============================================================
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V7_3_FULL_TEMP.xlsx")
-BOOKS_OUTPUT_FILE = os.path.join(BASE_DIR, "BOOKS_OF_ACCOUNTS_V7_3.xlsx")
-TECHNICAL_OUTPUT_FILE = os.path.join(BASE_DIR, "BANK_AUDIT_TECHNICAL_V7_3.xlsx")
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V7_3_2_FULL_TEMP.xlsx")
+BOOKS_OUTPUT_FILE = os.path.join(BASE_DIR, "BOOKS_OF_ACCOUNTS_V7_3_2.xlsx")
+TECHNICAL_OUTPUT_FILE = os.path.join(BASE_DIR, "BANK_AUDIT_TECHNICAL_V7_3_2.xlsx")
 OUTPUT_FILE = FULL_OUTPUT_FILE
 PATTERNS = (
     "*.xlsx", "*.XLSX",
@@ -348,6 +348,34 @@ def detect_bank_from_text(text):
     t = clean_text(text).lower()
     if not t:
         return "Unknown Bank"
+
+    # V7.3 FIX: identify the statement-owning bank from its IFSC before
+    # scanning transaction narration.  Counterparty bank names inside the
+    # first transaction rows must never override the statement bank.
+    ifsc_owner = {
+        "sbin": "State Bank of India (SBI)", "barb": "Bank of Baroda",
+        "bkid": "Bank of India", "mahb": "Bank of Maharashtra",
+        "cnrb": "Canara Bank", "cbin": "Central Bank of India",
+        "idib": "Indian Bank", "ioba": "Indian Overseas Bank",
+        "punb": "Punjab National Bank (PNB)", "psib": "Punjab & Sind Bank",
+        "ucba": "UCO Bank", "ubin": "Union Bank of India",
+        "utib": "Axis Bank", "bdbl": "Bandhan Bank", "cbin": "Central Bank of India",
+        "ciub": "City Union Bank", "dcbl": "DCB Bank", "dlxb": "Dhanlaxmi Bank",
+        "fdrl": "Federal Bank", "hdfc": "HDFC Bank", "icic": "ICICI Bank",
+        "ibkl": "IDBI Bank", "idfb": "IDFC FIRST Bank", "indb": "IndusInd Bank",
+        "jaka": "Jammu & Kashmir Bank", "karb": "Karnataka Bank",
+        "kvbl": "Karur Vysya Bank", "kkbk": "Kotak Mahindra Bank",
+        "ratn": "RBL Bank", "sibl": "South Indian Bank", "tmbL".lower(): "Tamilnad Mercantile Bank",
+        "yesb": "YES Bank", "aubl": "AU Small Finance Bank", "esmf": "ESAF Small Finance Bank",
+        "jsfb": "Jana Small Finance Bank", "sury": "Suryoday Small Finance Bank",
+        "ujvn": "Ujjivan Small Finance Bank", "utks": "Utkarsh Small Finance Bank",
+        "scbl": "Standard Chartered Bank", "hsbc": "HSBC", "dbss": "DBS Bank India",
+    }
+    header_zone = t[:6000]
+    for match in re.finditer(r"\b([a-z]{4})0[a-z0-9]{6}\b", header_zone, flags=re.I):
+        prefix = match.group(1).lower()
+        if prefix in ifsc_owner:
+            return ifsc_owner[prefix]
 
     generic_terms = {
         "transaction date", "tran date", "txn date", "value date",
@@ -1048,7 +1076,12 @@ def extract_reference_from_text(block):
     for pattern in patterns:
         m = re.search(pattern, s, flags=re.I)
         if m:
-            return clean_text(m.group(1))
+            # Some bank-specific reference patterns intentionally match the
+            # complete token and therefore have no capture group.  Older V7.3
+            # always called group(1), which raised IndexError on those rows.
+            # Use capture group 1 when present; otherwise use the full match.
+            value = m.group(1) if m.lastindex else m.group(0)
+            return clean_text(value)
     return ""
 
 
@@ -1370,6 +1403,23 @@ def transaction_amount_from_line(line):
         return None
     if len(nums) < 2:
         return None
+
+    # V7.3 FIX: statements such as HDFC/YES/PNB often print
+    # Withdrawal, Deposit and Balance as three money columns.  On a debit row
+    # the second-to-last token is commonly 0.00, so blindly taking nums[-2]
+    # loses every debit.  When the two amount columns are present and exactly
+    # one is non-zero, use the non-zero amount.  Direction is still verified
+    # independently from running-balance movement.
+    if len(nums) >= 3:
+        left = parse_number(nums[-3])
+        right = parse_number(nums[-2])
+        if not pd.isna(left) and not pd.isna(right):
+            left_f, right_f = abs(float(left)), abs(float(right))
+            if left_f > 0 and right_f <= 0.000001:
+                return left_f
+            if right_f > 0 and left_f <= 0.000001:
+                return right_f
+
     amount = parse_number(nums[-2])
     return None if pd.isna(amount) else abs(float(amount))
 
@@ -1708,6 +1758,20 @@ def nonblank_nunique(series):
 # V6 — ACCOUNT PROFILE / CLASSIFICATION / AUDIT HELPERS
 # ============================================================
 def detect_bank_from_filename(filename):
+    # V7.3.2 verified source-identity overrides. These are statement files whose
+    # owning bank is known from the statement itself; transaction counterparty
+    # bank names must not change the owner bank.
+    fn = clean_text(filename).lower()
+    verified = {
+        "nayeem soa": "YES Bank",
+        "sr283403308": "ICICI Bank",
+        "axcess plus": "Standard Chartered Bank",
+        "ret_8r69112820": "South Indian Bank",
+        "idfcfirstbankstatement": "IDFC FIRST Bank",
+    }
+    for token, bank in verified.items():
+        if token in fn:
+            return bank
     """Fallback bank detection when statement metadata is sparse."""
     n = norm(os.path.basename(filename))
     aliases = {
@@ -1795,9 +1859,8 @@ def extract_account_profile_from_text(text_value, filename=""):
     """Best-effort account metadata extraction. Missing values remain blank."""
     raw = text_value or ""
     flat = clean_text(raw)
-    bank = detect_bank_from_text(raw)
-    if bank == "Unknown Bank":
-        bank = detect_bank_from_filename(filename)
+    filename_bank = detect_bank_from_filename(filename)
+    bank = filename_bank if filename_bank != "Unknown Bank" else detect_bank_from_text(raw)
 
     def first_match(patterns):
         for pat in patterns:
@@ -1993,7 +2056,11 @@ for path in input_files:
             log_exception("PDF Read Error", exc, base, "PDF")
             continue
 
-        detected_bank = detect_bank_from_text(first_text)
+        # V7.3.2: prefer a verified filename identity when one exists.
+        # Otherwise inspect statement header text. This prevents counterparty
+        # IFSC/bank names inside transactions from hijacking bank ownership.
+        filename_bank = detect_bank_from_filename(base)
+        detected_bank = filename_bank if filename_bank != "Unknown Bank" else detect_bank_from_text(first_text)
         logger.info("  Detected bank: %s", detected_bank)
 
         if not is_bank_statement_pdf(first_text):
