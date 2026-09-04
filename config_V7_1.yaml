@@ -1,0 +1,110 @@
+# UNIVERSAL BANK BOOKS REPORT V7.1 - VERIFIED CONFIG
+# Author: Mohamed Nayeem | Instagram: @mohamednayeem7
+#
+# Custom aliases EXTEND the built-in V7.1 aliases; they do not replace them.
+column_aliases:
+  date:
+    - date
+    - tran date
+    - transaction date
+    - txn date
+    - value date
+    - posting date
+    - txn dt
+    - transaction dt
+    - posting dt
+    - date & time
+  narration:
+    - particulars
+    - narration
+    - description
+    - details
+    - remarks
+    - transaction remarks
+    - transaction narration
+  debit:
+    - debit
+    - withdrawal
+    - withdrawals
+    - dr
+    - dr amount
+    - debit amount
+    - withdrawal amount
+    - paid out
+  credit:
+    - credit
+    - deposit
+    - deposits
+    - cr
+    - cr amount
+    - credit amount
+    - deposit amount
+    - paid in
+  balance:
+    - balance
+    - closing balance
+    - running balance
+    - available balance
+    - ledger balance
+  customer:
+    - customer
+    - customer name
+    - counterparty
+    - party name
+    - beneficiary
+    - remitter
+    - payer name
+    - payee name
+  utr:
+    - utr
+    - reference
+    - ref no
+    - cheque no
+    - rrn
+    - transaction id
+    - utr/ref no
+    - bank reference
+  amount:
+    - amount
+    - transaction amount
+    - txn amount
+    - transaction value
+  type:
+    - type
+    - transaction type
+    - dr cr
+    - dr/cr
+    - cr/dr
+    - transaction nature
+
+rounding_precision: 2
+max_rows_per_sheet: 1000000
+preserve_raw_data: true
+review_confidence_ok: 85
+review_confidence_min: 65
+
+# India-wide parser controls
+diagnostic_mode: true
+ocr_enabled: true
+allow_leading_serial_before_date: true
+unknown_bank_generic_parser: true
+
+# Disabled for ordinary bank statements. Enable only for a controlled PG workflow.
+pg_validation_enabled: false
+pg_charge_rate: 0.008
+gst_rate: 0.18
+
+success_statuses:
+  - SUCCESS
+  - COMPLETED
+  - CAPTURED
+  - SETTLED
+failed_statuses:
+  - FAILED
+  - DECLINED
+  - REJECTED
+  - ERROR
+pending_statuses:
+  - PENDING
+  - INPROCESS
+  - AUTHORIZED
