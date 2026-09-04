@@ -1,13 +1,13 @@
 """
 ============================================================
-UNIVERSAL BANK BOOKS REPORT V7.3
+UNIVERSAL BANK BOOKS REPORT V8.5.2
 ============================================================
 Author   : Mohamed Nayeem
 Copyright: © Mohamed Nayeem — All Rights Reserved
 Instagram: @mohamednayeem7
 ============================================================
 
-V7.3 — BOOKS OF ACCOUNTS + SEPARATE FORENSIC/AUDIT TRAIL
+V8.5.2 — AUDIT MODES + CHARGES — HARDENED
 ----------------------------
 Supports ALL major Indian bank statement formats:
   SBI, HDFC, ICICI, Axis, Kotak Mahindra, PNB, BOB,
@@ -63,7 +63,7 @@ Optional OCR:
   python -m pip install pytesseract pdf2image pillow
 
 RUN
-  python UNIVERSAL_BANK_BOOKS_REPORT_V7_3_3.py
+  python UNIVERSAL_BANK_BOOKS_REPORT_V8_5_2_AUDIT_MODES_CHARGES_HARDENED.py
 """
 
 import os
@@ -86,8 +86,8 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V8_5_1_AUDIT_MODES_CHARGES"
-DISPLAY_VERSION = "V8.5.1 AUDIT MODES + CHARGES"
+VERSION = "V8_5_2_AUDIT_MODES_CHARGES_HARDENED"
+DISPLAY_VERSION = "V8.5.2 AUDIT MODES + CHARGES — HARDENED"
 
 VALIDATED_BANK_FORMATS = [
     "Axis Bank",
@@ -110,7 +110,7 @@ VALIDATED_BANK_FORMATS = [
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_5_1_AUDIT_MODES_CHARGES.xlsx")
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_5_2_AUDIT_MODES_CHARGES_HARDENED.xlsx")
 BOOKS_OUTPUT_FILE = FULL_OUTPUT_FILE
 TECHNICAL_OUTPUT_FILE = FULL_OUTPUT_FILE
 OUTPUT_FILE = FULL_OUTPUT_FILE
@@ -127,9 +127,17 @@ for pattern in PATTERNS:
     input_files.extend(glob.glob(os.path.join(BASE_DIR, pattern)))
 input_files = sorted({
     p for p in input_files
-    if os.path.basename(p).lower() != "universal_bank_books_report_v8_simple.xlsx"
+    if os.path.abspath(p).lower() not in {
+        os.path.abspath(FULL_OUTPUT_FILE).lower(),
+        os.path.abspath(BOOKS_OUTPUT_FILE).lower(),
+        os.path.abspath(TECHNICAL_OUTPUT_FILE).lower(),
+    }
+    and os.path.basename(p).lower() != "universal_bank_books_report_v8_simple.xlsx"
     and not os.path.basename(p).startswith("~$")
-    and not re.match(r"(?i)^(?:UNIVERSAL_BANK_BOOKS_REPORT_V[0-9_.-]+|BOOKS_OF_ACCOUNTS_V[0-9_.-]+|BANK_AUDIT_TECHNICAL_V[0-9_.-]+)\.xlsx$", os.path.basename(p))
+    and not re.match(
+        r"(?i)^(?:UNIVERSAL_BANK_BOOKS_REPORT_V[^/\\]*|BOOKS_OF_ACCOUNTS_V[^/\\]*|BANK_AUDIT_TECHNICAL_V[^/\\]*)\.xlsx$",
+        os.path.basename(p),
+    )
     and not re.match(r"(?i)^audit_log_\d{8}_\d{6}\.txt$", os.path.basename(p))
 })
 if not input_files and "--self-test" not in sys.argv:
@@ -2144,60 +2152,66 @@ def classify_transaction_type(narration):
 
 
 
+def _contains_term(text, term):
+    """Match an audit keyword as a token/phrase, not as a substring inside another word."""
+    normalized = clean_text(text).upper()
+    escaped = re.escape(clean_text(term).upper())
+    escaped = escaped.replace(r"\ ", r"\s+")
+    return re.search(r"(?<![A-Z0-9])" + escaped + r"(?![A-Z0-9])", normalized) is not None
+
+
+def _contains_any_term(text, terms):
+    return any(_contains_term(text, term) for term in terms)
+
+
 def classify_payment_mode_v851(narration):
-    """
-    V8.5.1 payment-mode classification.
-    This is independent from fee/charge classification.
-    """
+    """Classify payment mode conservatively from explicit narration evidence."""
     s = clean_text(narration).upper()
 
-    if any(k in s for k in [
+    if _contains_any_term(s, [
         "BILLPAY", "BILL PAY", "BILL PAYMENT", "BBPS", "BILLDESK",
-        "UTILITY BILL", "BILL PAYMENT TXN"
+        "UTILITY BILL", "BILL PAYMENT TXN",
     ]):
         return "BILL PAYMENT"
-    if "RTGS" in s:
+    if _contains_term(s, "RTGS"):
         return "RTGS"
-    if "NEFT" in s:
+    if _contains_term(s, "NEFT"):
         return "NEFT"
-    if "IMPS" in s or "MMT/IMPS" in s:
+    if _contains_term(s, "IMPS") or "MMT/IMPS" in s:
         return "IMPS"
-    if any(k in s for k in ["UPI/", "UPI-", "UPI ", "/UPI/", " UPI/"]):
+    if re.search(r"(?<![A-Z0-9])UPI(?=[/\-\s]|$)", s):
         return "UPI"
-    if any(k in s for k in ["CASH DEP", "CASH DEPOSIT", "BY CASH"]):
+    if _contains_any_term(s, ["CASH DEP", "CASH DEPOSIT", "BY CASH"]):
         return "CASH DEPOSIT"
-    if any(k in s for k in ["CASH WDL", "CASH WITHDRAWAL", "ATM WDL", "ATM WITHDRAWAL"]):
+    if _contains_any_term(s, ["CASH WDL", "CASH WITHDRAWAL", "ATM WDL", "ATM WITHDRAWAL"]):
         return "CASH WITHDRAWAL"
-    if any(k in s for k in ["CHEQUE", "CHQ", "CTS"]):
+    if _contains_any_term(s, ["CHEQUE", "CHQ", "CTS"]):
         return "CHEQUE"
-    if any(k in s for k in ["POS", "ECOM", "CARD", "SWIPE"]):
+    if _contains_any_term(s, ["POS", "ECOM", "CARD", "SWIPE"]):
         return "CARD / POS"
-    if any(k in s for k in ["NACH", "ECS", "ACH"]):
+    if _contains_any_term(s, ["NACH", "ECS", "ACH"]):
         return "NACH / ECS"
-    if any(k in s for k in ["INFT", "TRF", "TRANSFER"]):
+    if _contains_any_term(s, ["INFT", "TRF", "TRANSFER"]):
         return "BANK TRANSFER"
     return "OTHER"
 
 
 def classify_charge_type_v851(narration):
-    """
-    Classify actual bank charge / fee / tax transactions.
-    No estimated charge is created.
-    """
+    """Classify only explicitly evidenced bank charges, fees, or taxes."""
     s = clean_text(narration).upper()
 
-    bill = any(k in s for k in [
-        "BILLPAY", "BILL PAY", "BILL PAYMENT", "BBPS", "BILLDESK", "UTILITY BILL"
+    bill = _contains_any_term(s, [
+        "BILLPAY", "BILL PAY", "BILL PAYMENT", "BBPS", "BILLDESK", "UTILITY BILL",
     ])
-    gst = any(k in s for k in ["GST", "CGST", "SGST", "IGST", "SERVICE TAX"])
-    fee = any(k in s for k in [
+    gst = _contains_any_term(s, ["GST", "CGST", "SGST", "IGST", "SERVICE TAX"])
+    fee = _contains_any_term(s, [
         "CHARGE", "CHARGES", "CHGS", "CHG", "FEE", "FEES",
-        "COMMISSION", "COMM.", "COMMN", "PENAL", "PROCESSING FEE",
+        "COMMISSION", "COMM", "COMMN", "PENAL", "PROCESSING FEE",
         "SERVICE CHARGE", "TRANSACTION CHARGE", "TXN CHARGE",
         "SMS CHARGE", "ATM CHARGE", "ANNUAL FEE",
         "IMPS CHARGE", "NEFT CHARGE", "RTGS CHARGE", "UPI CHARGE",
         "ACH CHARGE", "NACH CHARGE", "CHEQUE RETURN CHARGE",
-        "RETURN CHARGE", "BOUNCE CHARGE"
+        "RETURN CHARGE", "BOUNCE CHARGE",
     ])
 
     if bill and fee:
@@ -2222,12 +2236,15 @@ def add_v851_audit_columns(df):
     g["Charge Type"] = g["Narration"].map(classify_charge_type_v851)
     g["Is Charge / Fee"] = g["Charge Type"].ne("").map({True: "YES", False: "NO"})
 
-    # Actual transaction value only; no artificial fee calculation.
+    # Source-backed net charge: debit is a charge; credit is a reversal/refund.
+    # This prevents charge reversals from inflating "Total Actual Charges / Fees".
     g["Charge Amount"] = 0.0
     charge_mask = g["Charge Type"].ne("")
+    debit_amount = pd.to_numeric(g["Debit"], errors="coerce").fillna(0).abs()
+    credit_amount = pd.to_numeric(g["Credit"], errors="coerce").fillna(0).abs()
     g.loc[charge_mask, "Charge Amount"] = (
-        g.loc[charge_mask, "Debit"].fillna(0) + g.loc[charge_mask, "Credit"].fillna(0)
-    ).abs()
+        debit_amount.loc[charge_mask] - credit_amount.loc[charge_mask]
+    )
 
     g["Bank Charges / Fees"] = 0.0
     mask = g["Charge Type"].eq("BANK CHARGES / FEES")
@@ -2273,7 +2290,7 @@ def charges_summary_v851(grp):
     x = g[g["Charge Type"].ne("")].copy()
     if x.empty:
         return pd.DataFrame(columns=[
-            "Charge Type", "Transaction Count", "Total Charge Amount",
+            "Charge Type", "Transaction Count", "Net Charge Amount",
             "Total Debit Charges", "Total Credit/Reversal", "First Date", "Last Date"
         ])
     rows = []
@@ -2281,7 +2298,7 @@ def charges_summary_v851(grp):
         rows.append({
             "Charge Type": charge_type,
             "Transaction Count": len(c),
-            "Total Charge Amount": float(c["Charge Amount"].fillna(0).sum()),
+            "Net Charge Amount": float(c["Charge Amount"].fillna(0).sum()),
             "Total Debit Charges": float(c["Debit"].fillna(0).sum()),
             "Total Credit/Reversal": float(c["Credit"].fillna(0).sum()),
             "First Date": c["Date"].dropna().min() if c["Date"].notna().any() else pd.NaT,
@@ -2427,9 +2444,26 @@ def run_internal_regression_tests():
     ref = extract_reference_from_text("NEFT-ABCD12345678 PAYMENT")
     check("reference extraction", bool(ref))
 
+    check("coffee is not fee", classify_charge_type_v851("COFFEE SHOP PURCHASE") == "")
+    check("beach is not ACH", classify_payment_mode_v851("BEACH RESORT PAYMENT") == "OTHER")
+    check("explicit fee detected", classify_charge_type_v851("ATM CHARGE 25.00") == "BANK CHARGES / FEES")
+
+    charge_sample = pd.DataFrame({
+        "Narration": ["ATM CHARGE", "ATM CHARGE REVERSAL"],
+        "Debit": [25.0, np.nan],
+        "Credit": [np.nan, 25.0],
+    })
+    charge_audit = add_v851_audit_columns(charge_sample)
+    check(
+        "charge reversal nets to zero",
+        float(charge_audit["Charge Amount"].sum()) == 0.0
+        and charge_audit.iloc[0]["Charge Amount"] == 25.0
+        and charge_audit.iloc[1]["Charge Amount"] == -25.0,
+    )
+
     if failures:
         raise AssertionError("Regression test failure(s): " + ", ".join(failures))
-    print(f"SELF-TEST PASS: {10} critical checks")
+    print(f"SELF-TEST PASS: {14} critical checks")
     return True
 
 
@@ -3402,7 +3436,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     charges_summary = charges_summary_v851(grp)
     add_df_sheet(
         wb,'CHARGES_SUMMARY',charges_summary,
-        money_cols=('Total Charge Amount','Total Debit Charges','Total Credit/Reversal'),
+        money_cols=('Net Charge Amount','Total Debit Charges','Total Credit/Reversal'),
         date_cols=('First Date','Last Date'),
         highlight_charges=True
     )
