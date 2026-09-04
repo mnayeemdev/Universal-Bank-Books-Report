@@ -1,6 +1,6 @@
 """
 ============================================================
-UNIVERSAL BANK BOOKS REPORT V7.3
+UNIVERSAL BANK BOOKS REPORT V 8.5.1
 ============================================================
 Author   : Mohamed Nayeem
 Copyright: © Mohamed Nayeem — All Rights Reserved
@@ -86,8 +86,8 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V8_4_VALIDATED"
-DISPLAY_VERSION = "V8.4 VALIDATED"
+VERSION = "V8_5_CUSTOMER_MONTHLY"
+DISPLAY_VERSION = "V8.5 CUSTOMER MONTHLY"
 
 VALIDATED_BANK_FORMATS = [
     "Axis Bank",
@@ -110,7 +110,7 @@ VALIDATED_BANK_FORMATS = [
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_4_VALIDATED.xlsx")
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_5_CUSTOMER_MONTHLY.xlsx")
 BOOKS_OUTPUT_FILE = FULL_OUTPUT_FILE
 TECHNICAL_OUTPUT_FILE = FULL_OUTPUT_FILE
 OUTPUT_FILE = FULL_OUTPUT_FILE
@@ -2717,7 +2717,7 @@ cover = pd.DataFrame([
 #   * INTERBANK_MATCHES contains candidate cross-bank debit/credit pairs only.
 #     It does not invent or automatically confirm an internal transfer.
 
-BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_4_VALIDATED")
+BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_5_CUSTOMER_MONTHLY")
 os.makedirs(BANK_OUTPUT_DIR, exist_ok=True)
 
 
@@ -2767,6 +2767,184 @@ def month_summary_for_group(grp):
             'Month End Available Balance': float(bal.iloc[-1]) if not bal.empty else np.nan,
         })
     return pd.DataFrame(rows)
+
+
+
+def _customer_display_series(df):
+    """
+    Reporting-only customer label.
+
+    IMPORTANT:
+    The original Customer Name is never overwritten.
+    Blank/unextractable customers are classified as UNIDENTIFIED / REVIEW so
+    their debit/credit remains visible in customer control totals.
+    """
+    s = df['Customer Name'].fillna('').astype(str).str.strip()
+    return s.where(s.ne(''), 'UNIDENTIFIED / REVIEW')
+
+
+def customer_wise_summary_for_group(grp):
+    """Lifetime customer summary for one bank/source file."""
+    g = grp.copy()
+    if g.empty:
+        return pd.DataFrame(columns=[
+            'Customer Name','Transaction Count','Debit Count','Total Debit',
+            'Credit Count','Total Credit','Net Credit - Debit',
+            'First Transaction Date','Last Transaction Date',
+            'Months Active','Review Transaction Count'
+        ])
+
+    g['Customer Display'] = _customer_display_series(g)
+
+    rows = []
+    for customer, c in g.groupby('Customer Display', dropna=False, sort=True):
+        c = c.sort_values(['Date','Source Row'], kind='stable', na_position='last')
+        valid_dates = c['Date'].dropna()
+        months_active = (
+            valid_dates.dt.to_period('M').astype(str).nunique()
+            if not valid_dates.empty else 0
+        )
+        rows.append({
+            'Customer Name': customer,
+            'Transaction Count': len(c),
+            'Debit Count': int(c['Debit'].notna().sum()),
+            'Total Debit': float(c['Debit'].fillna(0).sum()),
+            'Credit Count': int(c['Credit'].notna().sum()),
+            'Total Credit': float(c['Credit'].fillna(0).sum()),
+            'Net Credit - Debit': float(c['Credit'].fillna(0).sum() - c['Debit'].fillna(0).sum()),
+            'First Transaction Date': valid_dates.min() if not valid_dates.empty else pd.NaT,
+            'Last Transaction Date': valid_dates.max() if not valid_dates.empty else pd.NaT,
+            'Months Active': int(months_active),
+            'Review Transaction Count': int(c['Review Status'].fillna('').astype(str).str.upper().eq('REVIEW').sum())
+                if 'Review Status' in c.columns else 0,
+        })
+
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        # Largest monetary relationship first, unidentified/review kept visible.
+        out['Total Movement'] = out['Total Debit'].fillna(0) + out['Total Credit'].fillna(0)
+        out = out.sort_values(
+            ['Total Movement','Transaction Count','Customer Name'],
+            ascending=[False,False,True],
+            kind='stable'
+        ).drop(columns=['Total Movement']).reset_index(drop=True)
+    return out
+
+
+def customer_monthly_summary_for_group(grp):
+    """
+    Most important V8.5 sheet:
+    Customer + month level Debit/Credit statement for one bank/source file.
+    """
+    g = grp.copy()
+    if g.empty:
+        return pd.DataFrame(columns=[
+            'Customer Name','Year-Month','Month','Transaction Count',
+            'Debit Count','Total Debit','Credit Count','Total Credit',
+            'Net Credit - Debit','First Transaction Date',
+            'Last Transaction Date','Review Transaction Count'
+        ])
+
+    g['Customer Display'] = _customer_display_series(g)
+    g = g[g['Date'].notna()].copy()
+    if g.empty:
+        return pd.DataFrame(columns=[
+            'Customer Name','Year-Month','Month','Transaction Count',
+            'Debit Count','Total Debit','Credit Count','Total Credit',
+            'Net Credit - Debit','First Transaction Date',
+            'Last Transaction Date','Review Transaction Count'
+        ])
+
+    g['Year-Month'] = g['Date'].dt.to_period('M').astype(str)
+
+    rows = []
+    for (customer, ym), c in g.groupby(['Customer Display','Year-Month'], dropna=False, sort=True):
+        c = c.sort_values(['Date','Source Row'], kind='stable')
+        rows.append({
+            'Customer Name': customer,
+            'Year-Month': ym,
+            'Month': pd.Period(ym, freq='M').strftime('%B %Y'),
+            'Transaction Count': len(c),
+            'Debit Count': int(c['Debit'].notna().sum()),
+            'Total Debit': float(c['Debit'].fillna(0).sum()),
+            'Credit Count': int(c['Credit'].notna().sum()),
+            'Total Credit': float(c['Credit'].fillna(0).sum()),
+            'Net Credit - Debit': float(c['Credit'].fillna(0).sum() - c['Debit'].fillna(0).sum()),
+            'First Transaction Date': c['Date'].min(),
+            'Last Transaction Date': c['Date'].max(),
+            'Review Transaction Count': int(c['Review Status'].fillna('').astype(str).str.upper().eq('REVIEW').sum())
+                if 'Review Status' in c.columns else 0,
+        })
+
+    out = pd.DataFrame(rows)
+    return out.sort_values(
+        ['Customer Name','Year-Month'],
+        ascending=[True,True],
+        kind='stable'
+    ).reset_index(drop=True)
+
+
+def customer_ledger_for_group(grp):
+    """
+    Easy transaction-level customer ledger.
+    Sorted customer -> date -> source row.
+    Keeps the original Customer Name plus a reporting label for blanks.
+    """
+    g = grp.copy()
+    g['Customer Display'] = _customer_display_series(g)
+
+    cols = [c for c in [
+        'Customer Display','Customer Name','Date','UTR / Reference','Narration',
+        'Debit','Credit','Balance','Direction','Transaction Amount',
+        'Transaction Type','Possible Duplicate','Review Status',
+        'Source Part','Source Row'
+    ] if c in g.columns]
+
+    g = g[cols].copy()
+    if 'Customer Display' in g.columns:
+        g = g.rename(columns={'Customer Display':'Customer Reporting Name'})
+    sort_cols = [c for c in ['Customer Reporting Name','Date','Source Row'] if c in g.columns]
+    if sort_cols:
+        g = g.sort_values(sort_cols, kind='stable', na_position='last')
+    return g.reset_index(drop=True)
+
+
+def customer_control_for_group(grp, customer_summary, customer_monthly):
+    """Control totals proving customer reporting reconciles back to the bank source."""
+    source_debit = float(grp['Debit'].fillna(0).sum())
+    source_credit = float(grp['Credit'].fillna(0).sum())
+
+    cw_debit = float(customer_summary['Total Debit'].fillna(0).sum()) if not customer_summary.empty else 0.0
+    cw_credit = float(customer_summary['Total Credit'].fillna(0).sum()) if not customer_summary.empty else 0.0
+
+    cm_debit = float(customer_monthly['Total Debit'].fillna(0).sum()) if not customer_monthly.empty else 0.0
+    cm_credit = float(customer_monthly['Total Credit'].fillna(0).sum()) if not customer_monthly.empty else 0.0
+
+    blank_customer_rows = int(
+        grp['Customer Name'].fillna('').astype(str).str.strip().eq('').sum()
+    )
+
+    return pd.DataFrame([
+        ['Source Transaction Count', len(grp)],
+        ['Source Total Debit', source_debit],
+        ['Source Total Credit', source_credit],
+        ['Customer Summary Total Debit', cw_debit],
+        ['Customer Summary Total Credit', cw_credit],
+        ['Customer Summary Debit Difference', round(cw_debit - source_debit, ROUND_DECIMALS)],
+        ['Customer Summary Credit Difference', round(cw_credit - source_credit, ROUND_DECIMALS)],
+        ['Customer Monthly Total Debit', cm_debit],
+        ['Customer Monthly Total Credit', cm_credit],
+        ['Customer Monthly Debit Difference', round(cm_debit - source_debit, ROUND_DECIMALS)],
+        ['Customer Monthly Credit Difference', round(cm_credit - source_credit, ROUND_DECIMALS)],
+        ['Blank / Unidentified Customer Rows', blank_customer_rows],
+        ['Customer Summary Status',
+         'PASS' if round(cw_debit-source_debit, ROUND_DECIMALS) == 0
+                   and round(cw_credit-source_credit, ROUND_DECIMALS) == 0 else 'REVIEW'],
+        ['Customer Monthly Status',
+         'PASS' if round(cm_debit-source_debit, ROUND_DECIMALS) == 0
+                   and round(cm_credit-source_credit, ROUND_DECIMALS) == 0 else 'REVIEW'],
+    ], columns=['Control','Value'])
+
 
 
 def build_interbank_matches(tx):
@@ -2959,6 +3137,8 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
         ['Account Number',account_no],
         ['Source File',source_file],
         ['Transactions',len(grp)],
+        ['Identified Customers',int(grp['Customer Name'].fillna('').astype(str).str.strip().replace('',np.nan).nunique())],
+        ['Unidentified Customer Rows',int(grp['Customer Name'].fillna('').astype(str).str.strip().eq('').sum())],
         ['Total Debit',float(grp['Debit'].fillna(0).sum())],
         ['Total Credit',float(grp['Credit'].fillna(0).sum())],
         ['Net Credit - Debit',float(grp['Credit'].fillna(0).sum()-grp['Debit'].fillna(0).sum())],
@@ -2973,6 +3153,34 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     monthly=month_summary_for_group(grp)
     add_df_sheet(wb,'MONTHLY_SUMMARY',monthly,
                  money_cols=('Total Debit','Total Credit','Net Credit - Debit','Month End Available Balance'))
+
+    # V8.5 — CUSTOMER-FIRST REPORTING
+    customer_summary = customer_wise_summary_for_group(grp)
+    add_df_sheet(
+        wb,'CUSTOMER_WISE_SUMMARY',customer_summary,
+        money_cols=('Total Debit','Total Credit','Net Credit - Debit'),
+        date_cols=('First Transaction Date','Last Transaction Date')
+    )
+
+    customer_monthly = customer_monthly_summary_for_group(grp)
+    add_df_sheet(
+        wb,'CUSTOMER_MONTHLY',customer_monthly,
+        money_cols=('Total Debit','Total Credit','Net Credit - Debit'),
+        date_cols=('First Transaction Date','Last Transaction Date')
+    )
+
+    customer_ledger = customer_ledger_for_group(grp)
+    add_df_sheet(
+        wb,'CUSTOMER_LEDGER',customer_ledger,
+        money_cols=('Debit','Credit','Balance','Transaction Amount'),
+        date_cols=('Date',)
+    )
+
+    customer_control = customer_control_for_group(grp, customer_summary, customer_monthly)
+    add_df_sheet(
+        wb,'CUSTOMER_CONTROL',customer_control,
+        money_cols=()
+    )
 
     # EASY STATEMENT — clean normalized statement for this source only.
     easy_cols=[c for c in [
@@ -3014,7 +3222,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     wb.properties.creator=AUTHOR_NAME
     wb.properties.lastModifiedBy=AUTHOR_NAME
     wb.properties.title=f'{bank_name} Bank Statement Report {DISPLAY_VERSION}'
-    wb.properties.subject='Bank-wise raw statement, monthly summary, easy statement and interbank candidate review'
+    wb.properties.subject='Bank-wise customer summary, customer monthly debit-credit, customer ledger, raw statement and audit controls'
     wb.properties.description=f'Prepared by {AUTHOR_NAME} | {AUTHOR_INSTAGRAM} | Source: {source_file}'
     wb.save(out_path)
     generated_files.append(out_path)
@@ -3022,7 +3230,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
 
 print('')
 print('='*82)
-print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.4 VALIDATED')
+print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.5 CUSTOMER MONTHLY')
 print('='*82)
 print('Output Folder :',BANK_OUTPUT_DIR)
 print('Bank Files    :',len(generated_files))
@@ -3033,7 +3241,7 @@ for p in generated_files:
     print(' -',os.path.basename(p))
 print('')
 print('Every bank/source workbook contains:')
-print('  COVER | MONTHLY_SUMMARY | EASY_STATEMENT | RECONCILIATION | INTERBANK_MATCHES | REAL_RAW_*')
+print('  COVER | MONTHLY_SUMMARY | CUSTOMER_WISE_SUMMARY | CUSTOMER_MONTHLY | CUSTOMER_LEDGER | CUSTOMER_CONTROL | EASY_STATEMENT | RECONCILIATION | INTERBANK_MATCHES | REAL_RAW_*')
 print('')
 print('INTERBANK_MATCHES are CANDIDATES ONLY and must be verified from the actual bank statements.')
 print('Author:',AUTHOR_NAME,'|',AUTHOR_INSTAGRAM)
