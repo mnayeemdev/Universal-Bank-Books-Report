@@ -19,8 +19,8 @@ Supports ALL major Indian bank statement formats:
 File types:  .xlsx  .xls  .csv  .pdf  .html  .htm  .txt
 
 Outputs:
-  BOOKS_OF_ACCOUNTS_V7_3_2.xlsx
-  BANK_AUDIT_TECHNICAL_V7_3_2.xlsx
+  BOOKS_OF_ACCOUNTS_V7_3_3.xlsx
+  BANK_AUDIT_TECHNICAL_V7_3_3.xlsx
 
 Sheets:
   COVER_REPORT
@@ -63,7 +63,7 @@ Optional OCR:
   python -m pip install pytesseract pdf2image pillow
 
 RUN
-  python UNIVERSAL_BANK_BOOKS_REPORT_V7_3_2.py
+  python UNIVERSAL_BANK_BOOKS_REPORT_V7_3_3.py
 """
 
 import os
@@ -86,16 +86,16 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V7_3_2"
-DISPLAY_VERSION = "V7.3.2"
+VERSION = "V8_3_BANKWISE_FIXED"
+DISPLAY_VERSION = "V8.3 BANK-WISE FIXED"
 
 # ============================================================
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V7_3_2_FULL_TEMP.xlsx")
-BOOKS_OUTPUT_FILE = os.path.join(BASE_DIR, "BOOKS_OF_ACCOUNTS_V7_3_2.xlsx")
-TECHNICAL_OUTPUT_FILE = os.path.join(BASE_DIR, "BANK_AUDIT_TECHNICAL_V7_3_2.xlsx")
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_1_SIMPLE.xlsx")
+BOOKS_OUTPUT_FILE = FULL_OUTPUT_FILE
+TECHNICAL_OUTPUT_FILE = FULL_OUTPUT_FILE
 OUTPUT_FILE = FULL_OUTPUT_FILE
 PATTERNS = (
     "*.xlsx", "*.XLSX",
@@ -110,12 +110,12 @@ for pattern in PATTERNS:
     input_files.extend(glob.glob(os.path.join(BASE_DIR, pattern)))
 input_files = sorted({
     p for p in input_files
-    if os.path.abspath(p).lower() != os.path.abspath(OUTPUT_FILE).lower()
+    if os.path.basename(p).lower() != "universal_bank_books_report_v8_simple.xlsx"
     and not os.path.basename(p).startswith("~$")
     and not re.match(r"(?i)^(?:UNIVERSAL_BANK_BOOKS_REPORT_V[0-9_.-]+|BOOKS_OF_ACCOUNTS_V[0-9_.-]+|BANK_AUDIT_TECHNICAL_V[0-9_.-]+)\.xlsx$", os.path.basename(p))
     and not re.match(r"(?i)^audit_log_\d{8}_\d{6}\.txt$", os.path.basename(p))
 })
-if not input_files:
+if not input_files and "--self-test" not in sys.argv:
     raise FileNotFoundError(
         "No XLSX/XLS/CSV/PDF statement found in:\n" + BASE_DIR
     )
@@ -329,8 +329,24 @@ BANK_CATALOG = {
     "KEB Hana Bank": "FOREIGN BANK", "Shinhan Bank": "FOREIGN BANK", "Woori Bank": "FOREIGN BANK",
 }
 
+def canonical_bank_name(bank_name):
+    """Normalize known spelling/display variants to BANK_CATALOG keys."""
+    name = " ".join(str(bank_name or "").strip().split())
+    aliases = {
+        "Bank of Baroda": "Bank of Baroda (BOB)",
+        "BOB": "Bank of Baroda (BOB)",
+        "YES Bank": "Yes Bank",
+        "YES BANK": "Yes Bank",
+        "State Bank of India": "State Bank of India (SBI)",
+        "SBI": "State Bank of India (SBI)",
+        "Punjab National Bank": "Punjab National Bank (PNB)",
+        "PNB": "Punjab National Bank (PNB)",
+    }
+    return aliases.get(name, name)
+
+
 def bank_category(bank_name):
-    name = clean_text(bank_name)
+    name = canonical_bank_name(clean_text(bank_name))
     if name in BANK_CATALOG:
         return BANK_CATALOG[name]
     if name == "Unknown Bank":
@@ -353,7 +369,7 @@ def detect_bank_from_text(text):
     # scanning transaction narration.  Counterparty bank names inside the
     # first transaction rows must never override the statement bank.
     ifsc_owner = {
-        "sbin": "State Bank of India (SBI)", "barb": "Bank of Baroda",
+        "sbin": "State Bank of India (SBI)", "barb": "Bank of Baroda (BOB)",
         "bkid": "Bank of India", "mahb": "Bank of Maharashtra",
         "cnrb": "Canara Bank", "cbin": "Central Bank of India",
         "idib": "Indian Bank", "ioba": "Indian Overseas Bank",
@@ -366,7 +382,7 @@ def detect_bank_from_text(text):
         "jaka": "Jammu & Kashmir Bank", "karb": "Karnataka Bank",
         "kvbl": "Karur Vysya Bank", "kkbk": "Kotak Mahindra Bank",
         "ratn": "RBL Bank", "sibl": "South Indian Bank", "tmbL".lower(): "Tamilnad Mercantile Bank",
-        "yesb": "YES Bank", "aubl": "AU Small Finance Bank", "esmf": "ESAF Small Finance Bank",
+        "yesb": "Yes Bank", "aubl": "AU Small Finance Bank", "esmf": "ESAF Small Finance Bank",
         "jsfb": "Jana Small Finance Bank", "sury": "Suryoday Small Finance Bank",
         "ujvn": "Ujjivan Small Finance Bank", "utks": "Utkarsh Small Finance Bank",
         "scbl": "Standard Chartered Bank", "hsbc": "HSBC", "dbss": "DBS Bank India",
@@ -633,7 +649,7 @@ for field, custom_values in CONFIG.get("column_aliases", {}).items():
 
 ROUND_DECIMALS = CONFIG["rounding_precision"]
 MAX_ROWS_PER_SHEET = CONFIG["max_rows_per_sheet"]
-PRESERVE_RAW_DATA = CONFIG["preserve_raw_data"]
+PRESERVE_RAW_DATA = True  # V8.2: user-required REAL RAW preservation; config cannot disable it
 REVIEW_OK_THRESHOLD = CONFIG["review_confidence_ok"]
 REVIEW_MIN_THRESHOLD = CONFIG["review_confidence_min"]
 PG_VALIDATION_ENABLED = CONFIG["pg_validation_enabled"]
@@ -850,8 +866,12 @@ def parse_number(value):
     if not s:
         return np.nan
     negative = s.startswith("(") and s.endswith(")")
+    trailing_minus = s.endswith("-") and not s.startswith("-")
     if negative:
         s = s[1:-1]
+    elif trailing_minus:
+        s = s[:-1].strip()
+        negative = True
     s = (
         s.replace(",", "")
         .replace("₹", "")
@@ -951,6 +971,95 @@ def locate_generic_header(raw, max_rows=150):
             best_score = score
             best_row = i
     return best_row
+
+
+
+def locate_all_generic_headers(raw, max_rows=None):
+    """
+    V8.3 FIX:
+    Find every valid bank-table header in a sheet, not only the first one.
+
+    Some ICICI Excel statements are exported page-by-page into one worksheet.
+    Later pages repeat the header but the physical Excel columns can shift
+    left/right. Parsing only the first header therefore reads only page 1.
+    """
+    limit = len(raw) if max_rows is None else min(len(raw), max_rows)
+    headers = []
+    for i in range(limit):
+        vals = raw.iloc[i].tolist()
+        if is_generic_bank_header(vals):
+            headers.append(i)
+
+    # Avoid accidental adjacent duplicate header detections.
+    cleaned = []
+    for i in headers:
+        if not cleaned or i - cleaned[-1] > 1:
+            cleaned.append(i)
+    return cleaned
+
+
+def standardize_repeated_header_sheet(raw):
+    """
+    Parse a worksheet as independent header-delimited sections.
+
+    Returns:
+        tx_all          normalized transactions
+        header_rows     detected header row indexes (0-based)
+        candidate_rows  total rows presented to section standardizers
+
+    Source Row is temporarily stored as _ABS_SOURCE_ROW so the caller can
+    preserve the true worksheet row even when each page uses shifted columns.
+    """
+    header_rows = locate_all_generic_headers(raw)
+    if not header_rows:
+        return pd.DataFrame(), [], 0
+
+    frames = []
+    candidate_rows = 0
+
+    for pos, header_row in enumerate(header_rows):
+        next_header = header_rows[pos + 1] if pos + 1 < len(header_rows) else len(raw)
+        headers = [clean_text(x) for x in raw.iloc[header_row].tolist()]
+
+        safe_headers = []
+        used = {}
+        for col_no, h in enumerate(headers):
+            base = h or f"Column_{col_no+1}"
+            used[base] = used.get(base, 0) + 1
+            safe_headers.append(base if used[base] == 1 else f"{base}_{used[base]}")
+
+        section = raw.iloc[header_row + 1:next_header].copy()
+        section.columns = safe_headers
+
+        blank = section.apply(
+            lambda row: all(clean_text(v) == "" for v in row.tolist()),
+            axis=1,
+        )
+        section = section.loc[~blank].copy()
+        candidate_rows += len(section)
+        if section.empty:
+            continue
+
+        tx = standardize_generic_table(section)
+        if tx.empty:
+            continue
+
+        # Pandas index is still the original raw worksheet index.
+        tx["_ABS_SOURCE_ROW"] = tx.index.to_series().astype(int) + 1
+        tx["_HEADER_ROW"] = header_row + 1
+        frames.append(tx)
+
+    if not frames:
+        return pd.DataFrame(), header_rows, candidate_rows
+
+    out = pd.concat(frames, ignore_index=True)
+
+    # Exact same source row should never appear twice. This is only a parser
+    # overlap guard; it does NOT deduplicate genuine bank transactions.
+    if "_ABS_SOURCE_ROW" in out.columns:
+        out = out.drop_duplicates(subset=["_ABS_SOURCE_ROW"], keep="first")
+
+    return out, header_rows, candidate_rows
 
 
 def dataframe_from_header(raw, header_row):
@@ -1175,6 +1284,16 @@ def standardize_generic_table(table):
         if balance_col else np.nan
     )
 
+    # Bank exports commonly use 0.00 placeholders in both Debit and Credit
+    # columns. Treat zero as blank for direction purposes; otherwise every
+    # credit row with Debit=0.00 is later misclassified as DEBIT.
+    if debit_col is not None:
+        out["Debit"] = pd.to_numeric(out["Debit"], errors="coerce").abs()
+        out.loc[out["Debit"].abs() <= 10 ** (-(ROUND_DECIMALS + 1)), "Debit"] = np.nan
+    if credit_col is not None:
+        out["Credit"] = pd.to_numeric(out["Credit"], errors="coerce").abs()
+        out.loc[out["Credit"].abs() <= 10 ** (-(ROUND_DECIMALS + 1)), "Credit"] = np.nan
+
     # Amount + DR/CR type fallback
     if (
         debit_col is None
@@ -1387,41 +1506,79 @@ def signed_balance_from_line(line):
     return float(bal)
 
 
+def pdf_amount_and_explicit_direction(line):
+    """Return a source-backed PDF transaction amount and optional direction.
+
+    The final three money-like tokens are treated as
+    Debit/Withdrawal, Credit/Deposit, Balance only when all three look like
+    formatted monetary columns. This intentionally prefers an unresolved
+    direction over manufacturing one from narration numbers.
+
+    A trailing ``Cr``/``Dr`` belongs to the running balance and is never used as
+    transaction direction.
+    """
+    stripped = str(line or "")
+    if ALLOW_LEADING_SERIAL_BEFORE_DATE:
+        stripped = re.sub(
+            r"^\s*\d{1,7}\s*(?:[|.:;-]\s*)?(?=\d{1,2}[-/.])",
+            "",
+            stripped,
+            count=1,
+        )
+
+    for _ in range(2):
+        candidate = stripped.lstrip()
+        removed = False
+        for pat in DATE_LINE_PATTERNS:
+            updated = pat.sub("", candidate, count=1)
+            if updated != candidate:
+                stripped = updated
+                removed = True
+                break
+        if not removed:
+            break
+
+    money_matches = list(MONEY_TOKEN_RE.finditer(stripped))
+    if len(money_matches) < 2:
+        return None, ""
+
+    money_tokens = [match.group(0) for match in money_matches]
+    formatted_money = re.compile(r"^(?:\d{1,3}(?:,\d{2,3})+|\d+)\.\d{2}$")
+
+    if len(money_tokens) >= 3:
+        tail = money_tokens[-3:]
+        separators = [
+            stripped[money_matches[-3].end():money_matches[-2].start()],
+            stripped[money_matches[-2].end():money_matches[-1].start()],
+        ]
+        looks_like_three_money_columns = (
+            all(formatted_money.fullmatch(token) for token in tail)
+            and all(not re.search(r"[A-Za-z0-9]", sep) for sep in separators)
+        )
+
+        if looks_like_three_money_columns:
+            debit_candidate = parse_number(tail[0])
+            credit_candidate = parse_number(tail[1])
+            if pd.notna(debit_candidate) and pd.notna(credit_candidate):
+                debit_value = abs(float(debit_candidate))
+                credit_value = abs(float(credit_candidate))
+                epsilon = 10 ** (-(ROUND_DECIMALS + 1))
+
+                if debit_value > epsilon and credit_value <= epsilon:
+                    return debit_value, "DEBIT"
+                if credit_value > epsilon and debit_value <= epsilon:
+                    return credit_value, "CREDIT"
+
+    amount = parse_number(money_tokens[-2])
+    if pd.isna(amount):
+        return None, ""
+    return abs(float(amount)), ""
+
+
 def transaction_amount_from_line(line):
-    """
-    Extract transaction amount from a line.
-    Usually the second-to-last money token (last is balance).
-    """
-    stripped = line
-    for pat in DATE_LINE_PATTERNS:
-        stripped = pat.sub("", stripped, count=1)
-    for pat in DATE_LINE_PATTERNS:
-        stripped = pat.sub("", stripped, count=1)
-
-    nums = MONEY_TOKEN_RE.findall(stripped)
-    if "B/F" in line.upper() and len(nums) <= 1:
-        return None
-    if len(nums) < 2:
-        return None
-
-    # V7.3 FIX: statements such as HDFC/YES/PNB often print
-    # Withdrawal, Deposit and Balance as three money columns.  On a debit row
-    # the second-to-last token is commonly 0.00, so blindly taking nums[-2]
-    # loses every debit.  When the two amount columns are present and exactly
-    # one is non-zero, use the non-zero amount.  Direction is still verified
-    # independently from running-balance movement.
-    if len(nums) >= 3:
-        left = parse_number(nums[-3])
-        right = parse_number(nums[-2])
-        if not pd.isna(left) and not pd.isna(right):
-            left_f, right_f = abs(float(left)), abs(float(right))
-            if left_f > 0 and right_f <= 0.000001:
-                return left_f
-            if right_f > 0 and left_f <= 0.000001:
-                return right_f
-
-    amount = parse_number(nums[-2])
-    return None if pd.isna(amount) else abs(float(amount))
+    """Backward-compatible amount-only wrapper for the PDF parser."""
+    amount, _ = pdf_amount_and_explicit_direction(line)
+    return amount
 
 
 def parse_universal_pdf_text(path):
@@ -1558,7 +1715,7 @@ def parse_universal_pdf_text(path):
                 if current_balance is None:
                     continue
 
-                amount = transaction_amount_from_line(balance_line)
+                amount, explicit_direction = pdf_amount_and_explicit_direction(balance_line)
                 date_str = match_date_at_line_start(line)
                 txn_date = parse_date_flexible(date_str)
                 if pd.isna(txn_date):
@@ -1595,17 +1752,24 @@ def parse_universal_pdf_text(path):
                         elif balance_change > 0:
                             credit = amount
                     else:
-                        # Audit-safe V7: keep direction unresolved instead of
-                        # silently forcing debit/credit when the balance does not reconcile.
+                        # If the statement itself exposes a debit/credit amount column,
+                        # retain that source-backed direction but keep reconciliation CHECK.
                         balance_recon_status = "CHECK"
+                        if explicit_direction == "DEBIT":
+                            debit = amount
+                        elif explicit_direction == "CREDIT":
+                            credit = amount
                 elif not is_bf and amount is not None:
-                    # First transaction: use an explicit Dr/Cr marker only.
-                    if re.search(r"\bDr\b", balance_line, flags=re.I):
+                    # First transaction has no prior balance for movement control.
+                    # Only use direction when the PDF exposes an unambiguous
+                    # withdrawal/deposit amount pair. A trailing Cr/Dr belongs to
+                    # the running balance and must never be treated as transaction direction.
+                    if explicit_direction == "DEBIT":
                         debit = amount
-                        balance_recon_status = "MARKER ONLY"
-                    elif re.search(r"\bCr\b", balance_line, flags=re.I):
+                        balance_recon_status = "EXPLICIT AMOUNT COLUMN"
+                    elif explicit_direction == "CREDIT":
                         credit = amount
-                        balance_recon_status = "MARKER ONLY"
+                        balance_recon_status = "EXPLICIT AMOUNT COLUMN"
                     else:
                         balance_recon_status = "UNRESOLVED"
 
@@ -1734,10 +1898,16 @@ def ocr_pdf_optional(path):
             )
         except Exception:
             continue
-        lines = [
-            [x] for x in text_value.splitlines() if clean_text(x)
-        ]
+        lines = []
+        for x in text_value.splitlines():
+            if not clean_text(x):
+                continue
+            # Preserve table structure when OCR emits aligned whitespace.
+            parts = [clean_text(v) for v in re.split(r"\t+|\s{2,}", x.strip())]
+            lines.append(parts if parts else [clean_text(x)])
         if lines:
+            width = max(len(row) for row in lines)
+            lines = [row + [""] * (width - len(row)) for row in lines]
             outputs.append((
                 f"OCR Page {page_no}",
                 pd.DataFrame(lines),
@@ -1763,7 +1933,7 @@ def detect_bank_from_filename(filename):
     # bank names must not change the owner bank.
     fn = clean_text(filename).lower()
     verified = {
-        "nayeem soa": "YES Bank",
+        "nayeem soa": "Yes Bank",
         "sr283403308": "ICICI Bank",
         "axcess plus": "Standard Chartered Bank",
         "ret_8r69112820": "South Indian Bank",
@@ -2030,8 +2200,66 @@ def add_format_diagnostic(source_file, source_part, status, sample_text="", head
     })
 
 
+def run_internal_regression_tests():
+    """Small dependency-free regression suite for critical parser invariants."""
+    failures = []
+
+    def check(name, condition):
+        if not bool(condition):
+            failures.append(name)
+
+    check("parse trailing minus", parse_number("1,234.50-") == -1234.50)
+    check("canonical BOB", canonical_bank_name("Bank of Baroda") == "Bank of Baroda (BOB)")
+    check("canonical YES", canonical_bank_name("YES Bank") == "Yes Bank")
+
+    sample = pd.DataFrame({
+        "Date": ["01/09/2026", "02/09/2026"],
+        "Narration": ["TEST CREDIT", "TEST DEBIT"],
+        "Debit": ["0.00", "250.00"],
+        "Credit": ["500.00", "0.00"],
+        "Balance": ["1500.00", "1250.00"],
+    })
+    std = standardize_generic_table(sample)
+    check("zero debit becomes blank", pd.isna(std.iloc[0]["Debit"]) and std.iloc[0]["Credit"] == 500.0)
+    check("zero credit becomes blank", std.iloc[1]["Debit"] == 250.0 and pd.isna(std.iloc[1]["Credit"]))
+
+    amount, direction = pdf_amount_and_explicit_direction(
+        "01/09/2026 TEST 1,000.00 0.00 9,000.00 Cr"
+    )
+    check("pdf explicit debit", amount == 1000.0 and direction == "DEBIT")
+    amount, direction = pdf_amount_and_explicit_direction(
+        "01/09/2026 TEST 0.00 1,000.00 10,000.00 Cr"
+    )
+    check("pdf explicit credit", amount == 1000.0 and direction == "CREDIT")
+    amount, direction = pdf_amount_and_explicit_direction(
+        "01/09/2026 TEST 1,000.00 10,000.00 Cr"
+    )
+    check("balance Cr is not txn direction", amount == 1000.0 and direction == "")
+
+    amount, direction = pdf_amount_and_explicit_direction(
+        "01/09/2026 REF 0 1,000.00 10,000.00 Cr"
+    )
+    check(
+        "narration zero is not debit-credit column",
+        amount == 1000.0 and direction == "",
+    )
+
+    ref = extract_reference_from_text("NEFT-ABCD12345678 PAYMENT")
+    check("reference extraction", bool(ref))
+
+    if failures:
+        raise AssertionError("Regression test failure(s): " + ", ".join(failures))
+    print(f"SELF-TEST PASS: {10} critical checks")
+    return True
+
+
+if "--self-test" in sys.argv:
+    run_internal_regression_tests()
+    sys.exit(0)
+
+
 # ============================================================
-# LOAD SOURCES — V7.2 AUDIT / RAW / ROW-CONTROL
+# LOAD SOURCES — V7.3.3 AUDIT / RAW / ROW-CONTROL
 # ============================================================
 all_frames = []
 source_map = []
@@ -2184,30 +2412,37 @@ for path in input_files:
         if PRESERVE_RAW_DATA:
             store_raw_data(raw.copy(), base, source_name)
 
-        header_row = locate_generic_header(raw)
-        if header_row is None:
+        tx, header_rows, candidate_rows = standardize_repeated_header_sheet(raw)
+        if not header_rows:
             sample = " | ".join(clean_text(x) for x in raw.head(8).fillna("").astype(str).values.flatten().tolist())
             add_format_diagnostic(base, source_name, "NO HEADER", sample, note="Excel/CSV/HTML/TXT source read successfully but no supported header was detected.")
             row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": 0, "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": 0, "Output Rows": 0, "Status": "REVIEW", "Note": "No bank header detected"})
             continue
 
-        table = dataframe_from_header(raw, header_row)
-        tx = standardize_generic_table(table)
         if tx.empty:
-            row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": len(table), "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": len(table), "Output Rows": 0, "Status": "REVIEW", "Note": "Header detected but no transactions"})
+            row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": candidate_rows, "Imported Rows": 0, "Processed Rows": 0, "Rejected Rows": candidate_rows, "Output Rows": 0, "Status": "REVIEW", "Note": f"{len(header_rows)} header section(s) detected but no transactions"})
             continue
 
         tx["Source File"] = base
         tx["Source Part"] = source_name
-        tx["Source Row"] = (tx.index.to_series().astype(int) + header_row + 2).values
+        if "_ABS_SOURCE_ROW" in tx.columns:
+            tx["Source Row"] = tx["_ABS_SOURCE_ROW"].astype(int)
+            tx = tx.drop(columns=["_ABS_SOURCE_ROW"], errors="ignore")
+        else:
+            tx["Source Row"] = ""
         tx["Source Page"] = ""
-        tx["Parser"] = "GENERIC EXCEL/CSV"
+        tx["Parser"] = "GENERIC EXCEL/CSV MULTI-HEADER"
+        tx = tx.drop(columns=["_HEADER_ROW"], errors="ignore")
         all_frames.append(tx)
         recognized_file = True
-        source_map.append({"Source File": base, "Source Part": source_name, "Status": "RECOGNIZED", "Transaction Count": len(tx), "Note": f"Header row: {header_row + 1}"})
-        row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": len(table), "Imported Rows": len(tx), "Processed Rows": len(tx), "Rejected Rows": max(len(table) - len(tx), 0), "Output Rows": len(tx), "Status": "PASS", "Note": f"Header row: {header_row + 1}"})
-        parser_recon_records.append({"Source File": base, "Parser": "GENERIC EXCEL/CSV", "Transactions": len(tx), "Debit Total": float(tx["Debit"].fillna(0).sum()), "Credit Total": float(tx["Credit"].fillna(0).sum()), "PDF CHECK Pages": "", "Status": "PASS"})
-        logger.info("  %s: %s transaction(s)", source_name, f"{len(tx):,}")
+
+        header_note = ", ".join(str(x + 1) for x in header_rows[:12])
+        if len(header_rows) > 12:
+            header_note += ", ..."
+        source_map.append({"Source File": base, "Source Part": source_name, "Status": "RECOGNIZED", "Transaction Count": len(tx), "Note": f"{len(header_rows)} header section(s); header rows: {header_note}"})
+        row_control_seed.append({"Source File": base, "Source Part": source_name, "Source Rows": len(raw), "Candidate Data Rows": candidate_rows, "Imported Rows": len(tx), "Processed Rows": len(tx), "Rejected Rows": max(candidate_rows - len(tx), 0), "Output Rows": len(tx), "Status": "PASS", "Note": f"Multi-header parser; {len(header_rows)} section(s)"})
+        parser_recon_records.append({"Source File": base, "Parser": "GENERIC EXCEL/CSV MULTI-HEADER", "Transactions": len(tx), "Debit Total": float(tx["Debit"].fillna(0).sum()), "Credit Total": float(tx["Credit"].fillna(0).sum()), "PDF CHECK Pages": "", "Status": "PASS"})
+        logger.info("  %s: %s transaction(s) across %s header section(s)", source_name, f"{len(tx):,}", len(header_rows))
 
     if not recognized_file:
         source_map.append({"Source File": base, "Source Part": "", "Status": "UNRECOGNIZED", "Transaction Count": 0, "Note": "Expected Date + Debit/Credit, or Date + Amount + DR/CR."})
@@ -2226,65 +2461,50 @@ if not all_frames:
 # ============================================================
 transactions = pd.concat(all_frames, ignore_index=True, sort=False)
 
+# ============================================================
+# V8 SIMPLE — CONSOLIDATE, VALIDATE, SUMMARIZE, EXPORT
+# ============================================================
+# Keep the powerful parsers above. Everything below is intentionally small:
+# one workbook, no draft ledgers, no PG fee modelling, no chargeback workflow,
+# no RAW sheets by default, and no duplicate technical workbook.
+
 for required_col in [
     "Date", "Customer Name", "UTR / Reference", "Narration",
-    "Debit", "Credit", "Balance", "Customer Source",
-    "UTR Source", "Source File", "Source Part",
-    "Source Row", "Source Page", "Parser",
+    "Debit", "Credit", "Balance", "Customer Source", "UTR Source",
+    "Source File", "Source Part", "Source Row", "Source Page", "Parser",
     "Balance Reconciliation Status", "Balance Reconciliation Difference",
 ]:
     if required_col not in transactions.columns:
         transactions[required_col] = ""
 
-transactions["Date"] = pd.to_datetime(
-    transactions["Date"], errors="coerce"
-).dt.normalize()
-transactions["Debit"] = pd.to_numeric(
-    transactions["Debit"], errors="coerce"
+transactions["Date"] = pd.to_datetime(transactions["Date"], errors="coerce").dt.normalize()
+for c in ["Debit", "Credit", "Balance", "Balance Reconciliation Difference"]:
+    transactions[c] = pd.to_numeric(transactions[c], errors="coerce")
+
+eps = 10 ** (-(ROUND_DECIMALS + 1))
+has_debit = transactions["Debit"].notna() & transactions["Debit"].abs().gt(eps)
+has_credit = transactions["Credit"].notna() & transactions["Credit"].abs().gt(eps)
+
+# Never silently accept rows containing both debit and credit.
+transactions["Direction"] = np.select(
+    [has_debit & ~has_credit, has_credit & ~has_debit],
+    ["DEBIT", "CREDIT"],
+    default=""
 )
-transactions["Credit"] = pd.to_numeric(
-    transactions["Credit"], errors="coerce"
-)
-transactions["Balance"] = pd.to_numeric(
-    transactions["Balance"], errors="coerce"
-)
-transactions["Direction"] = np.where(
-    transactions["Debit"].notna(),
-    "DEBIT",
-    np.where(transactions["Credit"].notna(), "CREDIT", ""),
-)
-transactions["Transaction Amount"] = np.where(
-    transactions["Direction"].eq("DEBIT"),
-    transactions["Debit"],
-    transactions["Credit"],
+transactions["Transaction Amount"] = np.select(
+    [transactions["Direction"].eq("DEBIT"), transactions["Direction"].eq("CREDIT")],
+    [transactions["Debit"], transactions["Credit"]],
+    default=np.nan
 )
 
-# Duplicate diagnostic
-dup_key = (
-    transactions["Date"].astype(str)
-    + "|"
-    + transactions["Debit"].fillna(0).astype(str)
-    + "|"
-    + transactions["Credit"].fillna(0).astype(str)
-    + "|"
-    + transactions["UTR / Reference"]
-    .fillna("").astype(str).str.strip()
-    + "|"
-    + transactions["Narration"]
-    .fillna("").astype(str).str.strip()
-)
-transactions["Possible Duplicate"] = np.where(
-    dup_key.duplicated(keep=False), "YES", "NO"
-)
-
-
-# ============================================================
-# V6 — ENRICH TRANSACTIONS FOR BOOKS / AUDIT
-# ============================================================
+# Account profile enrichment.
 account_profile = build_account_profiles(input_files)
-profile_lookup = account_profile.set_index("Source File").to_dict("index") if not account_profile.empty else {}
-
-for col in ["Bank Name", "Bank Category", "Account Holder", "Account Number", "Account Last 4", "IFSC", "Account Key"]:
+profile_lookup = (
+    account_profile.set_index("Source File").to_dict("index")
+    if not account_profile.empty else {}
+)
+for col in ["Bank Name", "Bank Category", "Account Holder", "Account Number",
+            "Account Last 4", "IFSC", "Account Key"]:
     transactions[col] = transactions["Source File"].map(
         lambda f: profile_lookup.get(f, {}).get(col, "")
     )
@@ -2292,1426 +2512,510 @@ for col in ["Bank Name", "Bank Category", "Account Holder", "Account Number", "A
 transactions["Transaction Type"] = transactions["Narration"].apply(classify_transaction_type)
 transactions["Explicit GST Component"] = transactions["Narration"].apply(explicit_gst_component)
 
-confidence_values = transactions.apply(calculate_confidence, axis=1)
-transactions["Confidence Score"] = confidence_values.apply(lambda x: x[0])
-transactions["Review Reason"] = confidence_values.apply(lambda x: x[1])
-transactions["Review Status"] = np.select(
-    [
-        transactions["Confidence Score"] >= REVIEW_OK_THRESHOLD,
-        transactions["Confidence Score"] >= REVIEW_MIN_THRESHOLD,
-    ],
-    ["OK", "REVIEW"],
-    default="CRITICAL REVIEW",
+# Stronger review controls.
+def _simple_review(row):
+    reasons = []
+    if pd.isna(row.get("Date")):
+        reasons.append("MISSING DATE")
+    if pd.isna(row.get("Transaction Amount")):
+        if has_debit.loc[row.name] and has_credit.loc[row.name]:
+            reasons.append("BOTH DEBIT AND CREDIT")
+        else:
+            reasons.append("MISSING AMOUNT/DIRECTION")
+    if clean_text(row.get("Balance Reconciliation Status")).upper() == "CHECK":
+        reasons.append("BALANCE RECON CHECK")
+    if not clean_text(row.get("UTR / Reference")):
+        reasons.append("MISSING UTR")
+    return " | ".join(reasons)
+
+transactions["Review Reason"] = transactions.apply(_simple_review, axis=1)
+transactions["Review Status"] = np.where(
+    transactions["Review Reason"].eq(""), "OK", "REVIEW"
 )
 
+# Duplicate flag: conservative; do not delete anything.
+dup_key = (
+    transactions["Date"].astype(str) + "|" +
+    transactions["Debit"].fillna(0).round(ROUND_DECIMALS).astype(str) + "|" +
+    transactions["Credit"].fillna(0).round(ROUND_DECIMALS).astype(str) + "|" +
+    transactions["UTR / Reference"].fillna("").astype(str).str.strip() + "|" +
+    transactions["Narration"].fillna("").astype(str).str.strip()
+)
+transactions["Possible Duplicate"] = np.where(dup_key.duplicated(keep=False), "YES", "NO")
+transactions.loc[transactions["Possible Duplicate"].eq("YES"), "Review Status"] = "REVIEW"
+transactions.loc[
+    transactions["Possible Duplicate"].eq("YES") & transactions["Review Reason"].eq(""),
+    "Review Reason"
+] = "POSSIBLE DUPLICATE"
+
+# Final register order.
+register_columns = [
+    "Date", "Bank Name", "Account Key", "Account Number",
+    "Customer Name", "UTR / Reference", "Narration", "Transaction Type",
+    "Debit", "Credit", "Balance", "Direction", "Transaction Amount",
+    "Explicit GST Component", "Review Status", "Review Reason",
+    "Possible Duplicate", "Customer Source", "UTR Source",
+    "Balance Reconciliation Status", "Balance Reconciliation Difference",
+    "Parser", "Source File", "Source Part", "Source Page", "Source Row",
+]
+for c in register_columns:
+    if c not in transactions.columns:
+        transactions[c] = ""
+transactions = transactions[register_columns].sort_values(
+    ["Date", "Source File", "Source Page", "Source Row"], na_position="last"
+).reset_index(drop=True)
+
 review_required = transactions[
-    transactions["Review Status"].ne("OK")
-    | transactions["Possible Duplicate"].eq("YES")
+    transactions["Review Status"].eq("REVIEW")
 ].copy()
 
+# Summaries.
+transactions["Month"] = transactions["Date"].dt.to_period("M").astype(str)
 
-# V7 row-count control: transparent source/candidate/import/output accounting.
-row_control_df = pd.DataFrame(row_control_seed)
-if not row_control_df.empty:
-    duplicate_by_file = transactions.groupby("Source File")["Possible Duplicate"].apply(lambda s: int(s.eq("YES").sum())).to_dict()
-    review_by_file = transactions.groupby("Source File")["Review Status"].apply(lambda s: int(s.ne("OK").sum())).to_dict()
-    row_control_df["Duplicate Flagged"] = row_control_df["Source File"].map(duplicate_by_file).fillna(0).astype(int)
-    row_control_df["Review Flagged"] = row_control_df["Source File"].map(review_by_file).fillna(0).astype(int)
-    row_control_df["Difference"] = row_control_df["Imported Rows"] - row_control_df["Processed Rows"]
-    row_control_df["Status"] = np.where(
-        (row_control_df["Status"] == "PASS") & (row_control_df["Difference"] == 0),
-        "PASS",
-        row_control_df["Status"],
-    )
-else:
-    row_control_df = pd.DataFrame(columns=[
-        "Source File", "Source Part", "Source Rows", "Candidate Data Rows",
-        "Imported Rows", "Processed Rows", "Rejected Rows", "Output Rows",
-        "Duplicate Flagged", "Review Flagged", "Difference", "Status", "Note",
+date_wise = transactions.groupby("Date", dropna=False).agg(
+    Transaction_Count=("Transaction Amount", "count"),
+    Debit_Count=("Debit", lambda s: int(s.notna().sum())),
+    Debit_Total=("Debit", "sum"),
+    Credit_Count=("Credit", lambda s: int(s.notna().sum())),
+    Credit_Total=("Credit", "sum"),
+).reset_index()
+date_wise["Net_Credit_Minus_Debit"] = date_wise["Credit_Total"].fillna(0) - date_wise["Debit_Total"].fillna(0)
+
+month_wise = transactions.groupby("Month", dropna=False).agg(
+    Transaction_Count=("Transaction Amount", "count"),
+    Debit_Total=("Debit", "sum"),
+    Credit_Total=("Credit", "sum"),
+).reset_index()
+month_wise["Net_Credit_Minus_Debit"] = month_wise["Credit_Total"].fillna(0) - month_wise["Debit_Total"].fillna(0)
+
+customer_base = transactions[transactions["Customer Name"].fillna("").astype(str).str.strip().ne("")]
+if customer_base.empty:
+    customer_wise = pd.DataFrame(columns=[
+        "Customer Name", "Transaction_Count", "Debit_Total", "Credit_Total",
+        "Net_Credit_Minus_Debit", "First_Date", "Last_Date"
     ])
-
-parser_reconciliation = pd.DataFrame(parser_recon_records)
-raw_data_index = pd.DataFrame(raw_data_index_records)
-
-# Safe PG/GST validation: disabled by default for bank statements.
-if PG_VALIDATION_ENABLED:
-    pg_gst_validation = transactions[[
-        "Date", "Source File", "UTR / Reference", "Customer Name",
-        "Transaction Amount", "Narration"
-    ]].copy()
-    pg_gst_validation["Expected PG Charge"] = (pg_gst_validation["Transaction Amount"] * PG_CHARGE_RATE).round(ROUND_DECIMALS)
-    pg_gst_validation["Expected GST"] = (pg_gst_validation["Expected PG Charge"] * GST_RATE).round(ROUND_DECIMALS)
-    pg_gst_validation["Validation Status"] = "MODEL ONLY - REQUIRES PG EVIDENCE"
 else:
-    pg_gst_validation = pd.DataFrame([{
-        "Validation Status": "DISABLED",
-        "Note": "Bank statements do not by themselves prove a payment-gateway charge. Set pg_validation_enabled: true only for a controlled PG-validation workflow.",
-    }])
-
-refund_chargeback_review = transactions[
-    transactions["Narration"].fillna("").astype(str).str.contains(
-        r"REFUND|REVERSAL|REVERSED|RETURN|CHARGEBACK|CHARGE BACK|DISPUTE",
-        case=False, regex=True, na=False,
-    )
-].copy()
-
-# Account-wise summary
-account_wise = (
-    transactions.groupby(
-        ["Account Key", "Bank Name", "Account Holder", "Account Number", "IFSC"],
-        dropna=False,
-    )
-    .agg(
+    customer_wise = customer_base.groupby("Customer Name", dropna=False).agg(
         Transaction_Count=("Transaction Amount", "count"),
-        Debit_Count=("Debit", lambda x: int(x.notna().sum())),
         Debit_Total=("Debit", "sum"),
-        Credit_Count=("Credit", lambda x: int(x.notna().sum())),
         Credit_Total=("Credit", "sum"),
         First_Date=("Date", "min"),
         Last_Date=("Date", "max"),
-        Unique_Customers=("Customer Name", nonblank_nunique),
-        Unique_UTRs=("UTR / Reference", nonblank_nunique),
+    ).reset_index()
+    customer_wise["Net_Credit_Minus_Debit"] = (
+        customer_wise["Credit_Total"].fillna(0) - customer_wise["Debit_Total"].fillna(0)
     )
-    .reset_index()
-)
-account_wise["Net_Credit_Minus_Debit"] = account_wise["Credit_Total"].fillna(0) - account_wise["Debit_Total"].fillna(0)
 
-# Transaction type summary
-transaction_type_summary = (
-    transactions.groupby("Transaction Type", dropna=False)
-    .agg(
-        Transaction_Count=("Transaction Amount", "count"),
-        Debit_Count=("Debit", lambda x: int(x.notna().sum())),
-        Debit_Total=("Debit", "sum"),
-        Credit_Count=("Credit", lambda x: int(x.notna().sum())),
-        Credit_Total=("Credit", "sum"),
-    )
-    .reset_index()
-)
-transaction_type_summary["Net_Credit_Minus_Debit"] = transaction_type_summary["Credit_Total"].fillna(0) - transaction_type_summary["Debit_Total"].fillna(0)
+type_summary = transactions.groupby("Transaction Type", dropna=False).agg(
+    Transaction_Count=("Transaction Amount", "count"),
+    Debit_Total=("Debit", "sum"),
+    Credit_Total=("Credit", "sum"),
+).reset_index()
 
-# Bank charges / GST-related rows. No GST split is invented.
-charges_mask = transactions["Transaction Type"].isin(["BANK CHARGES", "GST / TAX"]) | transactions["Narration"].str.contains(
-    r"GST|IGST|CGST|SGST|CHARGE|CHGS|FEE|COMMISSION", case=False, na=False, regex=True
-)
-bank_charges_gst = transactions.loc[charges_mask, [
-    "Date", "Account Key", "Bank Name", "Narration", "Debit", "Credit",
-    "Transaction Type", "Explicit GST Component", "UTR / Reference", "Source File",
-]].copy()
-
-# UTR duplicate / conflict control
-utr_nonblank = transactions[
-    transactions["UTR / Reference"].fillna("").astype(str).str.strip().ne("")
-].copy()
-if utr_nonblank.empty:
-    utr_duplicate_check = pd.DataFrame(columns=[
-        "UTR / Reference", "Occurrence_Count", "Unique_Amounts", "First_Date", "Last_Date",
-        "Total_Debit", "Total_Credit", "Status",
-    ])
+# UTR duplicate/conflict control.
+utr_base = transactions[transactions["UTR / Reference"].fillna("").astype(str).str.strip().ne("")].copy()
+if utr_base.empty:
+    utr_check = pd.DataFrame(columns=["UTR / Reference", "Occurrences", "Unique Amounts", "Status"])
 else:
-    utr_duplicate_check = (
-        utr_nonblank.groupby("UTR / Reference", dropna=False)
-        .agg(
-            Occurrence_Count=("Transaction Amount", "count"),
-            Unique_Amounts=("Transaction Amount", "nunique"),
-            First_Date=("Date", "min"),
-            Last_Date=("Date", "max"),
-            Total_Debit=("Debit", "sum"),
-            Total_Credit=("Credit", "sum"),
-        )
-        .reset_index()
+    utr_check = utr_base.groupby("UTR / Reference").agg(
+        Occurrences=("UTR / Reference", "size"),
+        Unique_Amounts=("Transaction Amount", lambda s: s.dropna().round(ROUND_DECIMALS).nunique()),
+        First_Date=("Date", "min"),
+        Last_Date=("Date", "max"),
+    ).reset_index()
+    utr_check["Status"] = np.select(
+        [utr_check["Unique_Amounts"].gt(1), utr_check["Occurrences"].gt(1)],
+        ["CONFLICT - SAME UTR DIFFERENT AMOUNT", "REPEATED UTR"],
+        default="OK"
     )
-    utr_duplicate_check["Status"] = np.select(
-        [
-            (utr_duplicate_check["Occurrence_Count"] > 1) & (utr_duplicate_check["Unique_Amounts"] > 1),
-            utr_duplicate_check["Occurrence_Count"] > 1,
-        ],
-        ["CRITICAL - SAME UTR DIFFERENT AMOUNT", "DUPLICATE / REPEATED UTR"],
-        default="UNIQUE",
-    )
-    utr_duplicate_check = utr_duplicate_check[utr_duplicate_check["Occurrence_Count"] > 1].copy()
+    utr_check = utr_check[utr_check["Status"].ne("OK")].copy()
 
-# Account reconciliation: derive opening balance from first transaction's post-balance.
+# Reconciliation is per SOURCE FILE + ACCOUNT KEY to avoid mixing overlapping statements.
 recon_rows = []
-for account_key, grp in transactions.sort_values(["Date"]).groupby("Account Key", dropna=False):
-    grp = grp.sort_values(["Date"]).copy()
+for (source_file, account_key), grp in transactions.groupby(["Source File", "Account Key"], dropna=False):
+    grp = grp.sort_values(["Date", "Source Page", "Source Row"], na_position="last")
     with_bal = grp[grp["Balance"].notna()].copy()
-    opening = np.nan
-    closing = np.nan
+    opening = closing = np.nan
     if not with_bal.empty:
         first = with_bal.iloc[0]
-        first_bal = float(first["Balance"])
-        first_debit = 0.0 if pd.isna(first["Debit"]) else float(first["Debit"])
-        first_credit = 0.0 if pd.isna(first["Credit"]) else float(first["Credit"])
-        opening = first_bal + first_debit - first_credit
+        opening = float(first["Balance"]) + (0.0 if pd.isna(first["Debit"]) else float(first["Debit"])) - (0.0 if pd.isna(first["Credit"]) else float(first["Credit"]))
         closing = float(with_bal.iloc[-1]["Balance"])
-    debit_total_ac = float(grp["Debit"].fillna(0).sum())
-    credit_total_ac = float(grp["Credit"].fillna(0).sum())
-    expected_closing = opening + credit_total_ac - debit_total_ac if pd.notna(opening) else np.nan
-    difference = closing - expected_closing if pd.notna(closing) and pd.notna(expected_closing) else np.nan
-    status = "OK" if pd.notna(difference) and abs(difference) <= 0.02 else ("CHECK" if pd.notna(difference) else "BALANCE NOT AVAILABLE")
-    sample = grp.iloc[0]
+    debit_total = float(grp["Debit"].fillna(0).sum())
+    credit_total = float(grp["Credit"].fillna(0).sum())
+    expected = opening + credit_total - debit_total if pd.notna(opening) else np.nan
+    diff = closing - expected if pd.notna(closing) and pd.notna(expected) else np.nan
+    status = "OK" if pd.notna(diff) and abs(diff) <= 0.02 else ("CHECK" if pd.notna(diff) else "BALANCE NOT AVAILABLE")
     recon_rows.append({
-        "Account Key": account_key,
-        "Bank Name": sample.get("Bank Name", ""),
-        "Account Number": sample.get("Account Number", ""),
-        "First Date": grp["Date"].min(),
-        "Last Date": grp["Date"].max(),
-        "Derived Opening Balance": opening,
-        "Total Debit": debit_total_ac,
-        "Total Credit": credit_total_ac,
-        "Expected Closing Balance": expected_closing,
-        "Actual Closing Balance": closing,
-        "Difference": difference,
-        "Status": status,
+        "Source File": source_file, "Account Key": account_key,
+        "Bank Name": clean_text(grp.iloc[0].get("Bank Name")),
+        "First Date": grp["Date"].min(), "Last Date": grp["Date"].max(),
+        "Derived Opening Balance": opening, "Total Debit": debit_total,
+        "Total Credit": credit_total, "Expected Closing Balance": expected,
+        "Actual Closing Balance": closing, "Difference": diff, "Status": status,
     })
 bank_reconciliation = pd.DataFrame(recon_rows)
 
-# Data quality summary
-quality_metrics = [
-    ("Total Transactions", len(transactions)),
-    ("Missing Date", int(transactions["Date"].isna().sum())),
-    ("Missing Amount", int(transactions["Transaction Amount"].isna().sum())),
-    ("Missing Direction", int(transactions["Direction"].fillna("").eq("").sum())),
-    ("Missing Customer Name", int(transactions["Customer Name"].fillna("").astype(str).str.strip().eq("").sum())),
-    ("Missing UTR / Reference", int(transactions["UTR / Reference"].fillna("").astype(str).str.strip().eq("").sum())),
-    ("Missing Balance", int(transactions["Balance"].isna().sum())),
-    ("Possible Duplicate Rows", int(transactions["Possible Duplicate"].eq("YES").sum())),
-    ("Review Rows", int(transactions["Review Status"].eq("REVIEW").sum())),
-    ("Critical Review Rows", int(transactions["Review Status"].eq("CRITICAL REVIEW").sum())),
-    ("Duplicate / Conflicting UTRs", int(len(utr_duplicate_check))),
-]
-data_quality = pd.DataFrame(quality_metrics, columns=["Metric", "Count"])
-data_quality["Percent_of_Transactions"] = np.where(
-    data_quality["Metric"].eq("Total Transactions"),
-    100.0,
-    np.where(len(transactions) > 0, data_quality["Count"] / len(transactions) * 100.0, 0.0),
-)
+source_mapping = pd.DataFrame(source_map)
+pdf_page_recon = pd.concat(all_pdf_recon, ignore_index=True) if all_pdf_recon else pd.DataFrame()
 
-# ============================================================
-# V7.2 — BOOKS OF ACCOUNTS PREPARATION LAYER
-# ============================================================
-def suggested_counter_ledger(row):
-    """Conservative draft counter-ledger suggestion. Never overwrites source data."""
-    txn_type = clean_text(row.get("Transaction Type")).upper()
-    party = clean_text(row.get("Customer Name"))
-    direction = clean_text(row.get("Direction")).upper()
-    narration = clean_text(row.get("Narration")).upper()
-    if txn_type == "BANK CHARGES":
-        return "Bank Charges / Finance Cost Review"
-    if txn_type == "GST / TAX" or re.search(r"\b(?:GST|CGST|SGST|IGST|TDS|TAX)\b", narration):
-        return "Tax / GST Ledger Review"
-    if txn_type == "INTEREST":
-        return "Interest Income Review" if direction == "CREDIT" else "Interest Expense Review"
-    if txn_type in ("CASH DEPOSIT", "ATM WITHDRAWAL"):
-        return "Cash / Contra Review"
-    if txn_type == "INTERNAL TRANSFER":
-        if re.search(r"\b(?:OWN ACCOUNT|SELF TRANSFER|INTERNAL TRANSFER)\b", narration):
-            return "Own Bank / Contra Review"
-        return party if party else "UNCLASSIFIED COUNTER LEDGER"
-    if txn_type == "REFUND / REVERSAL":
-        return "Refund / Reversal Review"
-    if party:
-        return party
-    return "UNCLASSIFIED COUNTER LEDGER"
-
-
-def accounting_category(row):
-    txn_type = clean_text(row.get("Transaction Type")).upper()
-    direction = clean_text(row.get("Direction")).upper()
-    narration = clean_text(row.get("Narration")).upper()
-    if txn_type == "BANK CHARGES": return "BANK CHARGES / FINANCE COST"
-    if txn_type == "GST / TAX" or re.search(r"\b(?:GST|CGST|SGST|IGST|TDS|TAX)\b", narration): return "TAX / GST REVIEW"
-    if txn_type == "INTEREST": return "INTEREST INCOME" if direction == "CREDIT" else "INTEREST EXPENSE"
-    if txn_type in ("CASH DEPOSIT", "ATM WITHDRAWAL"): return "CASH / CONTRA"
-    if txn_type == "INTERNAL TRANSFER":
-        return "BANK / CONTRA" if re.search(r"\b(?:OWN ACCOUNT|SELF TRANSFER|INTERNAL TRANSFER)\b", narration) else ("PARTY RECEIPT" if direction == "CREDIT" else "PARTY PAYMENT")
-    if txn_type == "REFUND / REVERSAL": return "REFUND / REVERSAL"
-    if txn_type in ("UPI", "IMPS", "NEFT", "RTGS", "CHEQUE", "POS / CARD", "BANK TRANSFER", "NACH / ECS"):
-        return "PARTY RECEIPT" if direction == "CREDIT" else "PARTY PAYMENT"
-    return "UNCLASSIFIED / REVIEW"
-
-
-def voucher_type(row):
-    cat = accounting_category(row)
-    direction = clean_text(row.get("Direction")).upper()
-    if cat in ("CASH / CONTRA", "BANK / CONTRA"):
-        return "CONTRA"
-    if direction == "CREDIT":
-        return "RECEIPT"
-    if direction == "DEBIT":
-        return "PAYMENT"
-    return "JOURNAL / REVIEW"
-
-transactions["Accounting Category"] = transactions.apply(accounting_category, axis=1)
-transactions["Suggested Counter Ledger"] = transactions.apply(suggested_counter_ledger, axis=1)
-transactions["Voucher Type"] = transactions.apply(voucher_type, axis=1)
-transactions["Narration Status Flag"] = np.where(
-    transactions["Narration"].fillna("").astype(str).str.contains(
-        r"\b(?:REJECT|REJECTED|FAILED|FAILURE|DECLINED|CANCELLED|CANCELED|RETURNED|BOUNCED)\b",
-        case=False, regex=True, na=False
-    ),
-    "REVIEW - FAILURE/REJECTION WORD IN NARRATION",
-    "NORMAL",
-)
-transactions["Books Posting Status"] = np.where(
-    transactions["Review Status"].eq("OK")
-    & transactions["Suggested Counter Ledger"].ne("UNCLASSIFIED COUNTER LEDGER")
-    & transactions["Narration Status Flag"].eq("NORMAL"),
-    "DRAFT READY - VERIFY LEDGER",
-    "REVIEW BEFORE POSTING",
-)
-transactions["Bank Ledger"] = transactions.apply(
-    lambda r: f"{clean_text(r.get('Bank Name'))} A/c {clean_text(r.get('Account Last 4'))}".strip()
-    if clean_text(r.get("Bank Name")) else "Bank Account",
-    axis=1,
-)
-
-# Bank Book: statement credit = receipt/increase in Bank asset; statement debit = payment/decrease.
-bank_book = transactions[[
-    "Date", "Account Key", "Bank Name", "Bank Category", "Account Number", "Bank Ledger",
-    "Customer Name", "UTR / Reference", "Narration", "Transaction Type", "Voucher Type",
-    "Debit", "Credit", "Balance", "Transaction Amount", "Source File", "Source Part", "Source Page", "Source Row"
-]].copy()
-bank_book["Receipts (Bank Statement Credit)"] = bank_book["Credit"]
-bank_book["Payments (Bank Statement Debit)"] = bank_book["Debit"]
-bank_book = bank_book[[
-    "Date", "Account Key", "Bank Name", "Bank Category", "Account Number", "Bank Ledger",
-    "Customer Name", "UTR / Reference", "Narration", "Transaction Type", "Voucher Type",
-    "Receipts (Bank Statement Credit)", "Payments (Bank Statement Debit)", "Balance",
-    "Source File", "Source Part", "Source Page", "Source Row"
-]]
-
-# Draft double-entry posting register. Counter ledger remains a review field where not evidenced.
-ledger_posting_draft = transactions[[
-    "Date", "Voucher Type", "Bank Ledger", "Suggested Counter Ledger", "Accounting Category",
-    "Customer Name", "UTR / Reference", "Narration", "Direction", "Transaction Amount",
-    "Review Status", "Books Posting Status", "Source File", "Source Part", "Source Page", "Source Row"
-]].copy()
-ledger_posting_draft["Debit Ledger (Draft)"] = np.where(
-    transactions["Direction"].eq("CREDIT"), transactions["Bank Ledger"], transactions["Suggested Counter Ledger"]
-)
-ledger_posting_draft["Credit Ledger (Draft)"] = np.where(
-    transactions["Direction"].eq("DEBIT"), transactions["Bank Ledger"], transactions["Suggested Counter Ledger"]
-)
-ledger_posting_draft["Debit Amount (Draft)"] = transactions["Transaction Amount"]
-ledger_posting_draft["Credit Amount (Draft)"] = transactions["Transaction Amount"]
-ledger_posting_draft = ledger_posting_draft[[
-    "Date", "Voucher Type", "Debit Ledger (Draft)", "Debit Amount (Draft)",
-    "Credit Ledger (Draft)", "Credit Amount (Draft)", "Suggested Counter Ledger",
-    "Accounting Category", "Customer Name", "UTR / Reference", "Narration",
-    "Review Status", "Books Posting Status", "Source File", "Source Part", "Source Page", "Source Row"
-]]
-
-voucher_register = transactions[[
-    "Date", "Voucher Type", "Account Key", "Bank Ledger", "Customer Name", "Suggested Counter Ledger",
-    "UTR / Reference", "Narration", "Accounting Category", "Direction", "Transaction Amount",
-    "Review Status", "Books Posting Status", "Source File"
-]].copy()
-voucher_register.insert(0, "Voucher Draft No", [f"BNK-{i:08d}" for i in range(1, len(voucher_register)+1)])
-
-party_base = transactions[transactions["Customer Name"].fillna("").astype(str).str.strip().ne("")].copy()
-if party_base.empty:
-    party_ledger_summary = pd.DataFrame(columns=[
-        "Customer Name", "Receipt_Count", "Receipt_Total", "Payment_Count", "Payment_Total",
-        "Net_Receipt_Minus_Payment", "First_Date", "Last_Date", "Unique_UTRs"
-    ])
-else:
-    party_ledger_summary = party_base.groupby("Customer Name", dropna=False).agg(
-        Receipt_Count=("Credit", lambda s: int(s.notna().sum())),
-        Receipt_Total=("Credit", "sum"),
-        Payment_Count=("Debit", lambda s: int(s.notna().sum())),
-        Payment_Total=("Debit", "sum"),
-        First_Date=("Date", "min"), Last_Date=("Date", "max"),
-        Unique_UTRs=("UTR / Reference", nonblank_nunique),
-    ).reset_index()
-    party_ledger_summary["Net_Receipt_Minus_Payment"] = party_ledger_summary["Receipt_Total"].fillna(0)-party_ledger_summary["Payment_Total"].fillna(0)
-
-accounting_category_summary = transactions.groupby("Accounting Category", dropna=False).agg(
-    Transaction_Count=("Transaction Amount", "count"),
-    Debit_Count=("Debit", lambda s: int(s.notna().sum())), Debit_Total=("Debit", "sum"),
-    Credit_Count=("Credit", lambda s: int(s.notna().sum())), Credit_Total=("Credit", "sum"),
-).reset_index()
-accounting_category_summary["Net_Credit_Minus_Debit"] = accounting_category_summary["Credit_Total"].fillna(0)-accounting_category_summary["Debit_Total"].fillna(0)
-
-# Month key is needed by both books controls and general summaries.
-transactions["Month"] = transactions["Date"].dt.to_period("M").astype(str)
-
-suspense_review = transactions[
-    transactions["Suggested Counter Ledger"].eq("UNCLASSIFIED COUNTER LEDGER")
-    | transactions["Accounting Category"].eq("UNCLASSIFIED / REVIEW")
-    | transactions["Review Status"].ne("OK")
-    | transactions["Narration Status Flag"].ne("NORMAL")
-].copy()
-
-# V7.3 — Draft rows that passed parser/review controls. These are still DRAFT, not final ledger postings.
-posting_ready_draft = ledger_posting_draft[
-    ledger_posting_draft["Books Posting Status"].eq("DRAFT READY - VERIFY LEDGER")
-].copy()
-
-books_readiness = pd.DataFrame([
-    ["Total Bank Transactions", len(transactions)],
-    ["Draft Posting Ready - Verify Support", int(transactions["Books Posting Status"].eq("DRAFT READY - VERIFY LEDGER").sum())],
-    ["Review Before Posting", int(transactions["Books Posting Status"].eq("REVIEW BEFORE POSTING").sum())],
-    ["Suspense / Review Rows", len(suspense_review)],
-    ["Critical Parser Review", int(transactions["Review Status"].eq("CRITICAL REVIEW").sum())],
+# Compact data quality.
+data_quality = pd.DataFrame([
+    ["Total Transactions", len(transactions)],
+    ["Debit Transactions", int(transactions["Direction"].eq("DEBIT").sum())],
+    ["Credit Transactions", int(transactions["Direction"].eq("CREDIT").sum())],
+    ["Review Required", len(review_required)],
     ["Possible Duplicate Rows", int(transactions["Possible Duplicate"].eq("YES").sum())],
-    ["Narration Failure/Rejection Review", int(transactions["Narration Status Flag"].ne("NORMAL").sum())],
-], columns=["Books Readiness Metric", "Count"])
-books_readiness["Percent"] = np.where(len(transactions) > 0, books_readiness["Count"] / len(transactions), 0.0)
+    ["Missing Customer Name", int(transactions["Customer Name"].fillna("").astype(str).str.strip().eq("").sum())],
+    ["Missing UTR / Reference", int(transactions["UTR / Reference"].fillna("").astype(str).str.strip().eq("").sum())],
+    ["UTR Duplicate / Conflict Groups", len(utr_check)],
+    ["Reconciliation CHECK", int(bank_reconciliation["Status"].eq("CHECK").sum()) if not bank_reconciliation.empty else 0],
+], columns=["Metric", "Count"])
 
-monthly_books_control = transactions.groupby(["Month", "Account Key"], dropna=False).agg(
-    Transaction_Count=("Transaction Amount", "count"),
-    Receipts=("Credit", "sum"), Payments=("Debit", "sum"),
-    Review_Count=("Review Status", lambda s: int(s.ne("OK").sum())),
-    Unclassified_Count=("Suggested Counter Ledger", lambda s: int(s.eq("UNCLASSIFIED COUNTER LEDGER").sum())),
-).reset_index()
-monthly_books_control["Net_Movement"] = monthly_books_control["Receipts"].fillna(0)-monthly_books_control["Payments"].fillna(0)
-
-# ============================================================
-# SUMMARIES
-# ============================================================
-date_wise = (
-    transactions
-    .groupby("Date", dropna=False)
-    .agg(
-        Transaction_Count=("Transaction Amount", "count"),
-        Debit_Count=("Debit", lambda s: int(s.notna().sum())),
-        Debit_Total=("Debit", "sum"),
-        Credit_Count=("Credit", lambda s: int(s.notna().sum())),
-        Credit_Total=("Credit", "sum"),
-    )
-    .reset_index()
-)
-date_wise["Net_Credit_Minus_Debit"] = (
-    date_wise["Credit_Total"].fillna(0)
-    - date_wise["Debit_Total"].fillna(0)
-)
-
-transactions["Month"] = (
-    transactions["Date"].dt.to_period("M").astype(str)
-)
-month_wise = (
-    transactions
-    .groupby("Month", dropna=False)
-    .agg(
-        Transaction_Count=("Transaction Amount", "count"),
-        Debit_Count=("Debit", lambda s: int(s.notna().sum())),
-        Debit_Total=("Debit", "sum"),
-        Credit_Count=("Credit", lambda s: int(s.notna().sum())),
-        Credit_Total=("Credit", "sum"),
-        Unique_Customers=(
-            "Customer Name",
-            nonblank_nunique,
-        ),
-        Unique_UTRs=(
-            "UTR / Reference",
-            nonblank_nunique,
-        ),
-    )
-    .reset_index()
-)
-month_wise["Net_Credit_Minus_Debit"] = (
-    month_wise["Credit_Total"].fillna(0)
-    - month_wise["Debit_Total"].fillna(0)
-)
-
-customer_tx = transactions[
-    transactions["Customer Name"]
-    .fillna("").astype(str).str.strip().ne("")
-].copy()
-
-if customer_tx.empty:
-    customer_wise = pd.DataFrame(columns=[
-        "Customer Name", "Transaction_Count", "Debit_Count",
-        "Debit_Total", "Credit_Count", "Credit_Total",
-        "Net_Credit_Minus_Debit", "First_Date", "Last_Date",
-        "Unique_UTRs",
-    ])
-    customer_date_wise = pd.DataFrame(columns=[
-        "Date", "Customer Name", "Transaction_Count",
-        "Debit_Count", "Debit_Total", "Credit_Count",
-        "Credit_Total", "Net_Credit_Minus_Debit",
-    ])
-else:
-    customer_wise = (
-        customer_tx
-        .groupby("Customer Name", dropna=False)
-        .agg(
-            Transaction_Count=("Transaction Amount", "count"),
-            Debit_Count=("Debit", lambda s: int(s.notna().sum())),
-            Debit_Total=("Debit", "sum"),
-            Credit_Count=("Credit", lambda s: int(s.notna().sum())),
-            Credit_Total=("Credit", "sum"),
-            First_Date=("Date", "min"),
-            Last_Date=("Date", "max"),
-            Unique_UTRs=(
-                "UTR / Reference",
-                nonblank_nunique,
-            ),
-        )
-        .reset_index()
-    )
-    customer_wise["Net_Credit_Minus_Debit"] = (
-        customer_wise["Credit_Total"].fillna(0)
-        - customer_wise["Debit_Total"].fillna(0)
-    )
-    customer_wise = customer_wise[[
-        "Customer Name", "Transaction_Count", "Debit_Count",
-        "Debit_Total", "Credit_Count", "Credit_Total",
-        "Net_Credit_Minus_Debit", "First_Date", "Last_Date",
-        "Unique_UTRs",
-    ]]
-    customer_date_wise = (
-        customer_tx
-        .groupby(["Date", "Customer Name"], dropna=False)
-        .agg(
-            Transaction_Count=("Transaction Amount", "count"),
-            Debit_Count=("Debit", lambda s: int(s.notna().sum())),
-            Debit_Total=("Debit", "sum"),
-            Credit_Count=("Credit", lambda s: int(s.notna().sum())),
-            Credit_Total=("Credit", "sum"),
-        )
-        .reset_index()
-    )
-    customer_date_wise["Net_Credit_Minus_Debit"] = (
-        customer_date_wise["Credit_Total"].fillna(0)
-        - customer_date_wise["Debit_Total"].fillna(0)
-    )
-
-utr_register = transactions[[
-    "Date", "Customer Name", "UTR / Reference", "Narration",
-    "Debit", "Credit", "Balance", "Source File", "Source Part",
-]].copy()
-
-# ============================================================
-# CONTROL TOTALS
-# ============================================================
-total_transactions = len(transactions)
-debit_count = int(transactions["Debit"].notna().sum())
-credit_count = int(transactions["Credit"].notna().sum())
 total_debit = float(transactions["Debit"].fillna(0).sum())
 total_credit = float(transactions["Credit"].fillna(0).sum())
-net_movement = total_credit - total_debit
-valid_dates = transactions["Date"].dropna()
-first_date = valid_dates.min() if not valid_dates.empty else None
-last_date = valid_dates.max() if not valid_dates.empty else None
-unique_customers = int(
-    transactions["Customer Name"]
-    .replace("", np.nan).dropna().nunique()
-)
-unique_utrs = int(
-    transactions["UTR / Reference"]
-    .replace("", np.nan).dropna().nunique()
-)
-missing_customer = int(
-    transactions["Customer Name"]
-    .fillna("").astype(str).str.strip().eq("").sum()
-)
-missing_utr = int(
-    transactions["UTR / Reference"]
-    .fillna("").astype(str).str.strip().eq("").sum()
-)
-possible_duplicates = int(
-    transactions["Possible Duplicate"].eq("YES").sum()
-)
 
-# ============================================================
-# BUILD PDF RECON TABLE
-# ============================================================
-if all_pdf_recon:
-    pdf_page_recon = pd.concat(
-        all_pdf_recon, ignore_index=True, sort=False
-    )
-else:
-    pdf_page_recon = pd.DataFrame(columns=[
-        "Source File", "Page", "Parsed Debit", "Printed Debit",
-        "Debit Difference", "Parsed Credit", "Printed Credit",
-        "Credit Difference", "Status",
-    ])
-
-# ============================================================
-# WORKBOOK HELPERS
-# ============================================================
-wb = Workbook()
-wb.remove(wb.active)
-
-
-def safe_excel_value(value):
-    if isinstance(value, pd.Timestamp):
-        return value.to_pydatetime()
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.floating):
-        if np.isnan(value):
-            return None
-        return float(value)
-    if pd.isna(value):
-        return None
-    return value
-
-
-def style_header(ws):
-    for cell in ws[1]:
-        cell.fill = HEADER_FILL
-        cell.font = WHITE_BOLD
-        cell.border = BORDER
-        cell.alignment = Alignment(
-            horizontal="center",
-            vertical="center",
-            wrap_text=True,
-        )
-
-
-def auto_width(ws, max_width=42):
-    for col_idx in range(1, ws.max_column + 1):
-        max_len = 0
-        for row_idx in range(1, min(ws.max_row, 3000) + 1):
-            value = ws.cell(row_idx, col_idx).value
-            if value is not None:
-                max_len = max(max_len, len(str(value)))
-        ws.column_dimensions[
-            get_column_letter(col_idx)
-        ].width = min(max(max_len + 2, 11), max_width)
-
-
-def write_df(ws, frame, money_cols=(), date_cols=(), count_cols=()):
-    if frame is None or frame.empty:
-        ws["A1"] = "No data available"
-        return
-    for col_idx, col_name in enumerate(frame.columns, start=1):
-        ws.cell(1, col_idx, col_name)
-    for row_idx, row in enumerate(
-        frame.itertuples(index=False, name=None), start=2
-    ):
-        for col_idx, value in enumerate(row, start=1):
-            cell = ws.cell(
-                row_idx, col_idx, safe_excel_value(value)
-            )
-            cell.border = BORDER
-            cell.alignment = Alignment(vertical="center")
-    style_header(ws)
-    for col_idx, col_name in enumerate(frame.columns, start=1):
-        if col_name in money_cols:
-            for r in range(2, ws.max_row + 1):
-                ws.cell(r, col_idx).number_format = MONEY_FMT
-        elif col_name in date_cols:
-            for r in range(2, ws.max_row + 1):
-                ws.cell(r, col_idx).number_format = DATE_FMT
-        elif col_name in count_cols:
-            for r in range(2, ws.max_row + 1):
-                ws.cell(r, col_idx).number_format = COUNT_FMT
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-    auto_width(ws)
-
-
-def write_df_split(wb, frame, sheet_base, money_cols=(), date_cols=(), count_cols=()):
-    """Write safely within Excel row/name limits. Returns created sheet names."""
-    used = {ws.title.lower() for ws in wb.worksheets}
-    base = sanitize_sheet_name(sheet_base)
-    if frame is None or frame.empty:
-        name = sanitize_sheet_name(base, used)
-        ws = wb.create_sheet(name)
-        ws["A1"] = "No data available"
-        return [name]
-
-    chunk_size = min(MAX_ROWS_PER_SHEET, 1048575)
-    created = []
-    if len(frame) <= chunk_size:
-        name = sanitize_sheet_name(base, used)
-        ws = wb.create_sheet(name)
-        write_df(ws, frame, money_cols, date_cols, count_cols)
-        return [name]
-
-    index_records = []
-    for n, start in enumerate(range(0, len(frame), chunk_size), start=1):
-        chunk = frame.iloc[start:start + chunk_size]
-        name = sanitize_sheet_name(f"{base}_{n:03d}", used)
-        ws = wb.create_sheet(name)
-        write_df(ws, chunk, money_cols, date_cols, count_cols)
-        created.append(name)
-        index_records.append([name, start + 1, min(start + chunk_size, len(frame)), len(chunk)])
-
-    index_name = sanitize_sheet_name(f"{base}_INDEX", used)
-    ws = wb.create_sheet(index_name)
-    write_df(ws, pd.DataFrame(index_records, columns=["Sheet Name", "Start Record", "End Record", "Rows"]), count_cols=("Start Record", "End Record", "Rows"))
-    return created
-
-
-# ============================================================
-# COVER_REPORT
-# ============================================================
-ws = wb.create_sheet("COVER_REPORT")
-ws.sheet_view.showGridLines = False
-
-# Title
-ws.merge_cells("A1:D1")
-ws["A1"] = f"UNIVERSAL BANK BOOKS OF ACCOUNTS REPORT {VERSION}"
-ws["A1"].font = Font(bold=True, size=16, color="1F4E78")
-ws["A1"].alignment = Alignment(horizontal="center")
-
-# Author block
-ws.merge_cells("A2:D2")
-ws["A2"] = (
-    f"Author: {AUTHOR_NAME}  |  "
-    f"{AUTHOR_COPYRIGHT}  |  "
-    f"Instagram: {AUTHOR_INSTAGRAM}"
-)
-ws["A2"].font = Font(size=10, color="666666", italic=True)
-ws["A2"].alignment = Alignment(horizontal="center")
-ws["A2"].fill = AUTHOR_FILL
-
-cover_rows = [
-    ("Total Transaction Count", total_transactions),
-    ("Debit Transaction Count", debit_count),
-    ("Total Debit", total_debit),
-    ("Credit Transaction Count", credit_count),
-    ("Total Credit", total_credit),
-    ("Net Credit - Debit", net_movement),
-    ("First Transaction Date", first_date),
-    ("Last Transaction Date", last_date),
-    ("Unique Customers / Counterparties", unique_customers),
-    ("Unique UTR / References", unique_utrs),
-    ("Transactions Missing Customer Name", missing_customer),
-    ("Transactions Missing UTR / Reference", missing_utr),
-    ("Possible Duplicate Rows", possible_duplicates),
-    ("Review Required Rows", int(len(review_required))),
-    ("Critical Review Rows", int(transactions["Review Status"].eq("CRITICAL REVIEW").sum())),
-    ("Duplicate / Conflicting UTR Count", int(len(utr_duplicate_check))),
-    ("Bank Reconciliation CHECK Count", int(bank_reconciliation["Status"].eq("CHECK").sum()) if not bank_reconciliation.empty else 0),
-    ("Bank Charges / GST Related Rows", int(len(bank_charges_gst))),
-    ("Books Draft Ready Rows", int(transactions["Books Posting Status"].eq("DRAFT READY - VERIFY LEDGER").sum())),
-    ("Books Review Before Posting Rows", int(transactions["Books Posting Status"].eq("REVIEW BEFORE POSTING").sum())),
-    ("Unclassified Counter Ledger Rows", int(transactions["Suggested Counter Ledger"].eq("UNCLASSIFIED COUNTER LEDGER").sum())),
-    ("Failure/Rejection Narration Rows", int(transactions["Narration Status Flag"].ne("NORMAL").sum())),
-    (
-        "PDF Reconciliation CHECK Pages",
-        int(pdf_page_recon["Status"].eq("CHECK").sum())
-        if not pdf_page_recon.empty else 0,
-    ),
-    (
-        "Recognized Source Files",
-        transactions["Source File"].nunique(),
-    ),
-]
-
-for r, (label, value) in enumerate(cover_rows, start=4):
-    ws.cell(r, 1, label)
-    ws.cell(r, 2, safe_excel_value(value))
-    ws.cell(r, 1).border = BORDER
-    ws.cell(r, 2).border = BORDER
-    if label in ("Total Debit", "Total Credit", "Net Credit - Debit"):
-        ws.cell(r, 2).number_format = MONEY_FMT
-    if "Date" in label:
-        ws.cell(r, 2).number_format = DATE_FMT
-
-ws.column_dimensions["A"].width = 44
-ws.column_dimensions["B"].width = 24
-
-
-# ============================================================
-# ACCOUNT_PROFILE
-# ============================================================
-ws = wb.create_sheet("ACCOUNT_PROFILE")
-write_df(
-    ws,
-    account_profile,
-)
-
-# ============================================================
-# TRANSACTION_REGISTER
-# ============================================================
-register_columns = [
-    "Date", "Bank Name", "Bank Category", "Account Key", "Account Number",
-    "Customer Name", "UTR / Reference", "Narration",
-    "Transaction Type", "Accounting Category", "Suggested Counter Ledger", "Voucher Type",
-    "Debit", "Credit", "Balance", "Direction",
-    "Transaction Amount", "Balance Reconciliation Status", "Balance Reconciliation Difference",
-    "Confidence Score", "Review Status", "Review Reason", "Narration Status Flag", "Books Posting Status",
-    "Customer Source", "UTR Source", "Possible Duplicate", "Parser", "Source File",
-    "Source Part", "Source Page", "Source Row",
-]
-write_df_split(
-    wb,
-    transactions[register_columns],
-    "TRANSACTION_REGISTER",
-    money_cols=("Debit", "Credit", "Balance", "Transaction Amount", "Balance Reconciliation Difference"),
-    date_cols=("Date",),
-)
-
-
-# ============================================================
-# V7.2 — BANK_BOOK
-# ============================================================
-write_df_split(
-    wb, bank_book, "BANK_BOOK",
-    money_cols=("Receipts (Bank Statement Credit)", "Payments (Bank Statement Debit)", "Balance"),
-    date_cols=("Date",),
-)
-
-# ============================================================
-# V7.3 — BOOKS_READINESS
-write_df_split(wb, books_readiness, "BOOKS_READINESS", count_cols=("Count",))
-
-# V7.3 — POSTING_READY_DRAFT
-write_df_split(
-    wb, posting_ready_draft, "POSTING_READY_DRAFT",
-    money_cols=("Debit Amount (Draft)", "Credit Amount (Draft)"),
-    date_cols=("Date",),
-)
-
-# V7.2 — LEDGER_POSTING_DRAFT
-# ============================================================
-write_df_split(
-    wb, ledger_posting_draft, "LEDGER_POSTING_DRAFT",
-    money_cols=("Debit Amount (Draft)", "Credit Amount (Draft)"),
-    date_cols=("Date",),
-)
-
-# ============================================================
-# V7.2 — VOUCHER_REGISTER
-# ============================================================
-write_df_split(
-    wb, voucher_register, "VOUCHER_REGISTER",
-    money_cols=("Transaction Amount",), date_cols=("Date",),
-)
-
-# ============================================================
-# V7.2 — PARTY_LEDGER_SUMMARY
-# ============================================================
-write_df_split(
-    wb, party_ledger_summary, "PARTY_LEDGER_SUMMARY",
-    money_cols=("Receipt_Total", "Payment_Total", "Net_Receipt_Minus_Payment"),
-    date_cols=("First_Date", "Last_Date"),
-    count_cols=("Receipt_Count", "Payment_Count", "Unique_UTRs"),
-)
-
-# ============================================================
-# V7.2 — ACCOUNTING_CATEGORY_SUMMARY
-# ============================================================
-write_df_split(
-    wb, accounting_category_summary, "ACCOUNTING_CATEGORY_SUMMARY",
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count"),
-)
-
-# ============================================================
-# V7.2 — SUSPENSE_REVIEW
-# ============================================================
-suspense_cols = [c for c in [
-    "Date", "Bank Name", "Account Key", "Customer Name", "UTR / Reference", "Narration",
-    "Transaction Type", "Accounting Category", "Suggested Counter Ledger", "Debit", "Credit", "Balance",
-    "Review Status", "Review Reason", "Narration Status Flag", "Books Posting Status", "Source File", "Source Part", "Source Page", "Source Row"
-] if c in suspense_review.columns]
-write_df_split(
-    wb, suspense_review[suspense_cols], "SUSPENSE_REVIEW",
-    money_cols=("Debit", "Credit", "Balance"), date_cols=("Date",),
-)
-
-# ============================================================
-# V7.2 — MONTHLY_BOOKS_CONTROL
-# ============================================================
-write_df_split(
-    wb, monthly_books_control, "MONTHLY_BOOKS_CONTROL",
-    money_cols=("Receipts", "Payments", "Net_Movement"),
-    count_cols=("Transaction_Count", "Review_Count", "Unclassified_Count"),
-)
-
-# ============================================================
-# REVIEW_REQUIRED
-# ============================================================
-review_columns = [
-    "Date", "Bank Name", "Account Key", "Customer Name", "UTR / Reference",
-    "Narration", "Debit", "Credit", "Balance", "Direction", "Transaction Amount",
-    "Balance Reconciliation Status", "Balance Reconciliation Difference",
-    "Confidence Score", "Review Status", "Review Reason", "Possible Duplicate",
-    "Source File", "Source Part", "Source Page", "Source Row",
-]
-write_df_split(
-    wb,
-    review_required[review_columns] if not review_required.empty else review_required,
-    "REVIEW_REQUIRED",
-    money_cols=("Debit", "Credit", "Balance", "Transaction Amount", "Balance Reconciliation Difference"),
-    date_cols=("Date",),
-    count_cols=("Confidence Score",),
-)
-
-# ============================================================
-# DATE_WISE_SUMMARY
-# ============================================================
-ws = wb.create_sheet("DATE_WISE_SUMMARY")
-write_df(
-    ws, date_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    date_cols=("Date",),
-    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count"),
-)
-
-# ============================================================
-# MONTH_WISE_SUMMARY
-# ============================================================
-ws = wb.create_sheet("MONTH_WISE_SUMMARY")
-write_df(
-    ws, month_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    count_cols=(
-        "Transaction_Count", "Debit_Count", "Credit_Count",
-        "Unique_Customers", "Unique_UTRs",
-    ),
-)
-
-
-# ============================================================
-# ACCOUNT_WISE_SUMMARY
-# ============================================================
-ws = wb.create_sheet("ACCOUNT_WISE_SUMMARY")
-write_df(
-    ws,
-    account_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    date_cols=("First_Date", "Last_Date"),
-    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count", "Unique_Customers", "Unique_UTRs"),
-)
-
-# ============================================================
-# CUSTOMER_WISE_SUMMARY
-# ============================================================
-ws = wb.create_sheet("CUSTOMER_WISE_SUMMARY")
-write_df(
-    ws, customer_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    date_cols=("First_Date", "Last_Date"),
-    count_cols=(
-        "Transaction_Count", "Debit_Count", "Credit_Count",
-        "Unique_UTRs",
-    ),
-)
-
-# ============================================================
-# CUSTOMER_DATE_WISE
-# ============================================================
-ws = wb.create_sheet("CUSTOMER_DATE_WISE")
-write_df(
-    ws, customer_date_wise,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    date_cols=("Date",),
-    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count"),
-)
-
-
-# ============================================================
-# TRANSACTION_TYPE_SUMMARY
-# ============================================================
-ws = wb.create_sheet("TRANSACTION_TYPE_SUMMARY")
-write_df(
-    ws,
-    transaction_type_summary,
-    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
-    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count"),
-)
-
-# ============================================================
-# BANK_CHARGES_GST
-# ============================================================
-ws = wb.create_sheet("BANK_CHARGES_GST")
-write_df(
-    ws,
-    bank_charges_gst,
-    money_cols=("Debit", "Credit", "Explicit GST Component"),
-    date_cols=("Date",),
-)
-
-# ============================================================
-# UTR_WISE_REGISTER
-# ============================================================
-ws = wb.create_sheet("UTR_WISE_REGISTER")
-write_df(
-    ws, utr_register,
-    money_cols=("Debit", "Credit", "Balance"),
-    date_cols=("Date",),
-)
-
-
-# ============================================================
-# UTR_DUPLICATE_CHECK
-# ============================================================
-ws = wb.create_sheet("UTR_DUPLICATE_CHECK")
-write_df(
-    ws,
-    utr_duplicate_check,
-    money_cols=("Total_Debit", "Total_Credit"),
-    date_cols=("First_Date", "Last_Date"),
-    count_cols=("Occurrence_Count", "Unique_Amounts"),
-)
-if not utr_duplicate_check.empty:
-    status_col = list(utr_duplicate_check.columns).index("Status") + 1
-    for r in range(2, ws.max_row + 1):
-        if str(ws.cell(r, status_col).value).startswith("CRITICAL"):
-            for c in range(1, ws.max_column + 1):
-                ws.cell(r, c).fill = WARN_FILL
-
-# ============================================================
-# BANK_RECONCILIATION
-# ============================================================
-ws = wb.create_sheet("BANK_RECONCILIATION")
-write_df(
-    ws,
-    bank_reconciliation,
-    money_cols=(
-        "Derived Opening Balance", "Total Debit", "Total Credit",
-        "Expected Closing Balance", "Actual Closing Balance", "Difference",
-    ),
-    date_cols=("First Date", "Last Date"),
-)
-if not bank_reconciliation.empty:
-    status_col = list(bank_reconciliation.columns).index("Status") + 1
-    for r in range(2, ws.max_row + 1):
-        if ws.cell(r, status_col).value == "CHECK":
-            for c in range(1, ws.max_column + 1):
-                ws.cell(r, c).fill = WARN_FILL
-
-# ============================================================
-# PDF_PAGE_RECON
-# ============================================================
-ws = wb.create_sheet("PDF_PAGE_RECON")
-write_df(
-    ws, pdf_page_recon,
-    money_cols=(
-        "Parsed Debit", "Printed Debit", "Debit Difference",
-        "Parsed Credit", "Printed Credit", "Credit Difference",
-    ),
-    count_cols=("Page",),
-)
-if not pdf_page_recon.empty:
-    status_col = list(pdf_page_recon.columns).index("Status") + 1
-    for r in range(2, ws.max_row + 1):
-        if ws.cell(r, status_col).value == "CHECK":
-            for c in range(1, ws.max_column + 1):
-                ws.cell(r, c).fill = WARN_FILL
-
-
-# ============================================================
-# DATA_QUALITY
-# ============================================================
-ws = wb.create_sheet("DATA_QUALITY")
-write_df(
-    ws,
-    data_quality,
-    count_cols=("Count",),
-)
-if not data_quality.empty:
-    pct_col = list(data_quality.columns).index("Percent_of_Transactions") + 1
-    for r in range(2, ws.max_row + 1):
-        ws.cell(r, pct_col).number_format = '0.00%'
-        value = ws.cell(r, pct_col).value
-        if isinstance(value, (int, float)):
-            ws.cell(r, pct_col).value = value / 100.0
-
-# ============================================================
-# CONTROL_TOTALS
-# ============================================================
-ws = wb.create_sheet("CONTROL_TOTALS")
-controls = [
-    ["Metric", "Value"],
-    ["Total Transaction Count", total_transactions],
-    ["Debit Transaction Count", debit_count],
-    ["Total Debit", total_debit],
-    ["Credit Transaction Count", credit_count],
-    ["Total Credit", total_credit],
-    ["Net Credit - Debit", net_movement],
-    ["Unique Customers / Counterparties", unique_customers],
-    ["Unique UTR / References", unique_utrs],
-    ["Missing Customer Name", missing_customer],
-    ["Missing UTR / Reference", missing_utr],
-    ["Possible Duplicate Rows", possible_duplicates],
-    ["Review Required Rows", int(len(review_required))],
-    ["Critical Review Rows", int(transactions["Review Status"].eq("CRITICAL REVIEW").sum())],
-    ["Duplicate / Conflicting UTR Count", int(len(utr_duplicate_check))],
-    ["Bank Reconciliation CHECK Count", int(bank_reconciliation["Status"].eq("CHECK").sum()) if not bank_reconciliation.empty else 0],
-    ["Bank Charges / GST Related Rows", int(len(bank_charges_gst))],
-    [
-        "PDF Page Reconciliation CHECK Count",
-        int(pdf_page_recon["Status"].eq("CHECK").sum())
-        if not pdf_page_recon.empty else 0,
-    ],
-]
-for r, row in enumerate(controls, start=1):
-    for c, value in enumerate(row, start=1):
-        ws.cell(r, c, safe_excel_value(value))
-        ws.cell(r, c).border = BORDER
-style_header(ws)
-for r in (4, 6, 7):
-    ws.cell(r, 2).number_format = MONEY_FMT
-ws.column_dimensions["A"].width = 44
-ws.column_dimensions["B"].width = 24
-
-# ============================================================
-# SOURCE_MAPPING
-# ============================================================
-ws = wb.create_sheet("SOURCE_MAPPING")
-write_df(
-    ws, pd.DataFrame(source_map),
-    count_cols=("Transaction Count",),
-)
-
-# ============================================================
-# V7 — ROW_COUNT_CONTROL
-# ============================================================
-write_df_split(
-    wb, row_control_df, "ROW_COUNT_CONTROL",
-    count_cols=("Source Rows", "Candidate Data Rows", "Imported Rows", "Processed Rows", "Rejected Rows", "Output Rows", "Duplicate Flagged", "Review Flagged", "Difference"),
-)
-
-# ============================================================
-# V7 — SOURCE_RAW_INDEX + RAW SOURCE SHEETS
-# ============================================================
-write_df_split(wb, raw_data_index, "SOURCE_RAW_INDEX", count_cols=("Start Record", "End Record", "Rows"))
-for raw_sheet_name, raw_df in raw_data_sheets.items():
-    # RAW sheet names are generated as short safe names.
-    write_df_split(wb, raw_df, raw_sheet_name)
-
-# ============================================================
-# V7 — PARSER_RECONCILIATION
-# ============================================================
-write_df_split(
-    wb, parser_reconciliation, "PARSER_RECONCILIATION",
-    money_cols=("Debit Total", "Credit Total"),
-    count_cols=("Transactions", "PDF CHECK Pages"),
-)
-
-# ============================================================
-# V7.2 — FORMAT_DIAGNOSTICS
-# ============================================================
-format_diagnostics_df = pd.DataFrame(format_diagnostic_records) if format_diagnostic_records else pd.DataFrame(columns=[
-    "Source File", "Source Part", "Status", "Detected Bank", "Header Hits", "Sample / First Content", "Note"
-])
-write_df_split(wb, format_diagnostics_df, "FORMAT_DIAGNOSTICS")
-
-# V7.2 — BANK_SUPPORT_MATRIX
-bank_support_matrix = pd.DataFrame([
-    {
-        "Bank Name": bank,
-        "Bank Category": BANK_CATALOG.get(bank, "OTHER / LEGACY BANK"),
-        "Detection": "BUILT-IN",
-        "Parsing": "GENERIC + PDF TEXT/TABLE + BALANCE CONTROL",
-        "Books Preparation": "SUPPORTED - SUBJECT TO REVIEW CONTROLS",
-        "Notes": "Layout may still require review if scanned/protected/non-tabular."
-    }
-    for bank in sorted(BANK_SIGNATURES.keys())
-] + [
-    {"Bank Name": "Other Indian bank / co-operative bank", "Bank Category": "OTHER / CO-OPERATIVE", "Detection": "GENERIC", "Parsing": "HEADER ALIAS + DATE/AMOUNT/BALANCE", "Books Preparation": "SUPPORTED WHEN TRANSACTIONS ARE RELIABLY EXTRACTED", "Notes": "FORMAT_DIAGNOSTICS captures unsupported layouts."}
-])
-write_df_split(wb, bank_support_matrix, "BANK_SUPPORT_MATRIX")
-
-# ============================================================
-# V7 — EXCEPTIONS
-# ============================================================
-exceptions_df = pd.DataFrame(exceptions_list) if exceptions_list else pd.DataFrame(columns=[
-    "Exception Type", "Description", "Source File", "Source Part", "Source Row", "Timestamp"
-])
-write_df_split(wb, exceptions_df, "EXCEPTIONS")
-
-# ============================================================
-# V7 — CONFIG_USED
-# ============================================================
-config_rows = []
-for key, value in CONFIG.items():
-    if key == "column_aliases":
-        for field, aliases in value.items():
-            config_rows.append({"Setting": f"column_aliases.{field}", "Value": " | ".join(map(str, aliases))})
-    else:
-        config_rows.append({"Setting": key, "Value": str(value)})
-config_rows.append({"Setting": "config_file", "Value": CONFIG_FILE})
-config_rows.append({"Setting": "run_id", "Value": RUN_ID})
-write_df_split(wb, pd.DataFrame(config_rows), "CONFIG_USED")
-
-# ============================================================
-# V7 — AUDIT_LOG
-# ============================================================
-audit_log_df = pd.DataFrame([
-    ["Run ID", RUN_ID],
-    ["Generated On", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-    ["Author", AUTHOR_NAME],
+cover = pd.DataFrame([
+    ["Report", "Universal Bank Books Report — Simple & Powerful"],
     ["Version", DISPLAY_VERSION],
-    ["Config File", CONFIG_FILE],
-    ["Audit Log File", LOG_FILE],
+    ["Author", AUTHOR_NAME],
+    ["Instagram", AUTHOR_INSTAGRAM],
     ["Source Files", len(input_files)],
     ["Transactions", len(transactions)],
+    ["Total Debit", total_debit],
+    ["Total Credit", total_credit],
     ["Review Required", len(review_required)],
-    ["Raw Preservation", PRESERVE_RAW_DATA],
-    ["PG Validation Enabled", PG_VALIDATION_ENABLED],
+    ["Possible Duplicate Rows", int(transactions["Possible Duplicate"].eq("YES").sum())],
+    ["Generated On", datetime.now().strftime("%d-%m-%Y %H:%M:%S")],
 ], columns=["Metric", "Value"])
-write_df_split(wb, audit_log_df, "AUDIT_LOG")
 
 # ============================================================
-# V7 — PG_GST_VALIDATION (SAFE / CONFIG-CONTROLLED)
+# V8.2 — BANK-WISE SEPARATE FILES + REAL RAW + MONTH-WISE + INTERBANK
 # ============================================================
-write_df_split(
-    wb, pg_gst_validation, "PG_GST_VALIDATION",
-    money_cols=("Transaction Amount", "Expected PG Charge", "Expected GST"),
-    date_cols=("Date",),
-)
+# IMPORTANT:
+#   * No bank/source statement is mixed with another bank/source workbook.
+#   * Every output workbook contains its own MONTHLY_SUMMARY and EASY_STATEMENT.
+#   * REAL_RAW_* sheets are copied from source rows before standardization.
+#   * INTERBANK_MATCHES contains candidate cross-bank debit/credit pairs only.
+#     It does not invent or automatically confirm an internal transfer.
 
-# ============================================================
-# V7 — REFUND_CHARGEBACK_REVIEW (ACTUAL NARRATION ONLY)
-# ============================================================
-refund_cols = [c for c in [
-    "Date", "Bank Name", "Account Key", "Customer Name", "UTR / Reference",
-    "Narration", "Debit", "Credit", "Balance", "Transaction Amount",
-    "Source File", "Source Part", "Source Page", "Source Row"
-] if c in refund_chargeback_review.columns]
-write_df_split(
-    wb,
-    refund_chargeback_review[refund_cols] if not refund_chargeback_review.empty else refund_chargeback_review,
-    "REFUND_CHARGEBACK_REVIEW",
-    money_cols=("Debit", "Credit", "Balance", "Transaction Amount"),
-    date_cols=("Date",),
-)
+BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_3_FIXED")
+os.makedirs(BANK_OUTPUT_DIR, exist_ok=True)
 
-# ============================================================
-# REPORT_NOTES
-# ============================================================
-ws = wb.create_sheet("REPORT_NOTES")
-notes = [
-    ["Item", "Note"],
-    [
-        "Author",
-        f"{AUTHOR_NAME}  |  {AUTHOR_COPYRIGHT}  |  "
-        f"Instagram: {AUTHOR_INSTAGRAM}",
-    ],
-    [
-        "Purpose",
-        "Bank statement to supporting Books-of-Accounts "
-        "transaction report.",
-    ],
-    [
-        "V7.3 Complete India Bank Support",
-        "Supports ALL major Indian banks: SBI, HDFC, ICICI, "
-        "Axis, Kotak, PNB, BOB, Canara, Union, IDBI, Yes, "
-        "IndusInd, Federal, RBL, Bandhan, AU Small Finance, "
-        "and any bank producing standard tabular statements.",
-    ],
-    [
-        "V7.3 PDF Parser",
-        "Universal PDF text parser handles all date formats "
-        "(DD-MM-YYYY, DD/MM/YYYY, DD-MMM-YYYY, YYYY-MM-DD, "
-        "etc.) and uses running balance movement to determine "
-        "Debit/Credit for any bank layout.",
-    ],
-    [
-        "Debit / Credit",
-        "Direction is derived from actual running balance "
-        "movement and transaction amount. Falls back to "
-        "Cr/Dr suffix detection when balance history is "
-        "unavailable.",
-    ],
-    [
-        "PDF Page Reconciliation",
-        "Where the PDF prints Total Withdrawals and Total "
-        "Deposits, parsed page totals are checked against "
-        "those printed figures.",
-    ],
-    [
-        "Customer Name",
-        "Uses source name field when available; otherwise "
-        "uses best-effort structured narration/name-line "
-        "extraction (NEFT, RTGS, IMPS, UPI, POS, TO/FROM "
-        "patterns).",
-    ],
-    [
-        "UTR / Reference",
-        "Uses source reference field when available; "
-        "otherwise extracts known UPI/IMPS/NEFT/RTGS/INFT "
-        "references from narration.",
-    ],
-    [
-        "Missing Values",
-        "Missing customer/UTR values remain unavailable; "
-        "no value is invented.",
-    ],
-    [
-        "Duplicates",
-        "Possible duplicates are only flagged and are never "
-        "automatically removed.",
-    ],
-    [
-        "V7 Audit Controls",
-        "Adds account profile, confidence scoring, review queue, transaction-type classification, bank charges/GST review, UTR duplicate controls, account-level reconciliation and data-quality metrics.",
-    ],
-    [
-        "Confidence / Review",
-        "Confidence score is a control indicator only. Low-confidence rows are surfaced in REVIEW_REQUIRED and are not silently deleted or altered.",
-    ],
-    [
-        "Bank Reconciliation",
-        "Derived opening balance is calculated from the first available post-transaction balance, then checked against total debit/credit and actual closing balance.",
-    ],
-    [
-        "Bank Charges / GST",
-        "Rows are classified from actual narration. GST component is populated only when an explicit GST amount is present in the narration; no GST split is invented.",
-    ],
-    [
-        "Supported Files",
-        "XLSX, XLS, CSV, PDF, HTML/HTM and delimited TXT. Text-based PDFs are preferred; OCR is optional for scanned PDFs.",
-    ],
-    [
-        "V7.3 Config",
-        "config.yaml is validated at startup. Custom aliases extend built-in aliases rather than replacing them.",
-    ],
-    [
-        "V7 Row Control",
-        "ROW_COUNT_CONTROL records source rows, candidate rows, imported/processed/output rows, rejected rows and review flags without treating metadata/header rows as missing transactions.",
-    ],
-    [
-        "V7 Raw Traceability",
-        "When preserve_raw_data is true, source tables and parsed PDF transactions are preserved in split RAW_### sheets with SOURCE_RAW_INDEX.",
-    ],
-    [
-        "V7 PG/GST Safety",
-        "PG validation is disabled by default. Ordinary bank transactions are never automatically charged 0.8% + GST merely because rates exist in config.yaml.",
-    ],
-    [
-        "V7.3 Format Diagnostics",
-        "Unknown or unusual layouts are recorded in FORMAT_DIAGNOSTICS rather than silently discarded. BANK_SUPPORT_MATRIX lists built-in bank fingerprints plus generic/co-operative-bank support.",
-    ],
-    [
-        "Coverage Limitation",
-        "No software can guarantee every bank statement layout. Password-protected, corrupt, image-only or highly non-tabular statements may require OCR/manual review. V7.3 is designed for maximum Indian-bank coverage with audit-safe fallbacks.",
-    ],
-    [
-        "V7.3 Books Preparation",
-        "Adds a clean Books workbook and a separate forensic/audit workbook. BOOKS_READINESS and POSTING_READY_DRAFT separate usable draft postings from suspense/review items. Draft ledger suggestions never replace source evidence and must be verified before accounting-system posting.",
-    ],
-    [
-        "Double Entry Logic",
-        "Bank-statement CREDIT is treated as an increase in the bank asset (Bank Ledger debit in the draft); bank-statement DEBIT is treated as a decrease in the bank asset (Bank Ledger credit in the draft). Counter ledgers are suggested conservatively and unclassified items are routed to review.",
-    ],
-    [
-        "Accounting Safety",
-        "Payment method (UPI/IMPS/NEFT/RTGS) is not automatically treated as income or expense. The code uses party/counter-ledger review and does not manufacture invoices, sales, purchases, GST eligibility, TDS treatment or expense purpose.",
-    ],
-    [
-        "Generated On",
-        datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-    ],
-]
-for r, row in enumerate(notes, start=1):
-    for c, value in enumerate(row, start=1):
-        ws.cell(r, c, value)
-        ws.cell(r, c).border = BORDER
-style_header(ws)
-ws.column_dimensions["A"].width = 30
-ws.column_dimensions["B"].width = 115
 
-# ============================================================
-# SAVE / CONSOLE CONTROL
-# ============================================================
-print("")
-print("=" * 82)
-print("FINAL TOTALS")
-print("=" * 82)
-print(f"Transactions : {total_transactions:,}")
-print(f"Debit Count  : {debit_count:,}")
-print(f"Debit Total  : {total_debit:,.2f}")
-print(f"Credit Count : {credit_count:,}")
-print(f"Credit Total : {total_credit:,.2f}")
-print(f"Customers    : {unique_customers:,}")
-print(f"UTR / Refs   : {unique_utrs:,}")
-print(f"Missing Name : {missing_customer:,}")
-print(f"Missing UTR  : {missing_utr:,}")
-print(f"Review Rows  : {len(review_required):,}")
-print(f"UTR Issues   : {len(utr_duplicate_check):,}")
-print(f"Recon CHECK  : {int(bank_reconciliation["Status"].eq("CHECK").sum()) if not bank_reconciliation.empty else 0:,}")
-if not pdf_page_recon.empty:
-    print(
-        "PDF Page Recon CHECK:",
-        int(pdf_page_recon["Status"].eq("CHECK").sum()),
-    )
-print("")
-print(f"Author       : {AUTHOR_NAME}")
-print(f"Copyright    : {AUTHOR_COPYRIGHT}")
-print(f"Instagram    : {AUTHOR_INSTAGRAM}")
-print("")
-print("Preparing separate Books and Technical/Audit workbooks...")
-wb.properties.creator = AUTHOR_NAME
-wb.properties.lastModifiedBy = AUTHOR_NAME
-wb.properties.title = f"Universal Bank Books Report {DISPLAY_VERSION}"
-wb.properties.subject = "Bank Statement Books of Accounts / Audit Control Report"
-wb.properties.description = f"Prepared by {AUTHOR_NAME} | Instagram: {AUTHOR_INSTAGRAM} | Run ID: {RUN_ID}"
-logger.info("Saving temporary full workbook: %s", FULL_OUTPUT_FILE)
-wb.save(FULL_OUTPUT_FILE)
+def safe_file_component(value, max_len=70):
+    s = clean_text(value)
+    s = re.sub(r'[^A-Za-z0-9._-]+', '_', s).strip('._-')
+    return (s or 'BANK_STATEMENT')[:max_len]
 
-BOOKS_SHEETS = [
-    "COVER_REPORT", "ACCOUNT_PROFILE", "BOOKS_READINESS", "BANK_BOOK",
-    "TRANSACTION_REGISTER", "VOUCHER_REGISTER", "LEDGER_POSTING_DRAFT",
-    "POSTING_READY_DRAFT", "PARTY_LEDGER_SUMMARY", "DATE_WISE_SUMMARY",
-    "MONTH_WISE_SUMMARY", "ACCOUNT_WISE_SUMMARY", "CUSTOMER_WISE_SUMMARY",
-    "CUSTOMER_DATE_WISE", "ACCOUNTING_CATEGORY_SUMMARY", "TRANSACTION_TYPE_SUMMARY",
-    "BANK_CHARGES_GST", "BANK_RECONCILIATION", "UTR_WISE_REGISTER",
-    "UTR_DUPLICATE_CHECK", "REVIEW_REQUIRED", "SUSPENSE_REVIEW",
-    "MONTHLY_BOOKS_CONTROL", "CONTROL_TOTALS", "DATA_QUALITY", "REPORT_NOTES"
-]
-TECHNICAL_SHEETS = [
-    "COVER_REPORT", "ACCOUNT_PROFILE", "TRANSACTION_REGISTER", "REVIEW_REQUIRED",
-    "UTR_WISE_REGISTER", "UTR_DUPLICATE_CHECK", "BANK_RECONCILIATION",
-    "PDF_PAGE_RECON", "DATA_QUALITY", "CONTROL_TOTALS", "SOURCE_MAPPING",
-    "ROW_COUNT_CONTROL", "SOURCE_RAW_INDEX", "PARSER_RECONCILIATION",
-    "FORMAT_DIAGNOSTICS", "BANK_SUPPORT_MATRIX", "EXCEPTIONS", "CONFIG_USED",
-    "AUDIT_LOG", "PG_GST_VALIDATION", "REFUND_CHARGEBACK_REVIEW", "REPORT_NOTES"
-]
 
-def save_subset_workbook(source_path, destination_path, keep_base_names, title, subject):
-    out = load_workbook(source_path)
-    keep = set(keep_base_names)
-    # Split RAW sheets and split INDEX sheets are retained for technical workbook.
-    for ws_name in list(out.sheetnames):
-        raw_or_split_technical = (
-            ws_name.startswith("RAW_") or
-            ws_name.startswith("SOURCE_RAW_INDEX") or
-            ws_name.startswith("ROW_COUNT_CONTROL") or
-            ws_name.startswith("PARSER_RECONCILIATION") or
-            ws_name.startswith("FORMAT_DIAGNOSTICS") or
-            ws_name.startswith("EXCEPTIONS") or
-            ws_name.startswith("AUDIT_LOG") or
-            ws_name.startswith("CONFIG_USED")
-        )
-        if destination_path == TECHNICAL_OUTPUT_FILE:
-            should_keep = ws_name in keep or raw_or_split_technical
-        else:
-            # write_df_split may suffix very large books sheets as _001, _002...
-            should_keep = ws_name in keep or any(ws_name.startswith(base + "_") for base in keep)
-        if not should_keep and len(out.sheetnames) > 1:
-            del out[ws_name]
-    out.properties.creator = AUTHOR_NAME
-    out.properties.lastModifiedBy = AUTHOR_NAME
-    out.properties.title = title
-    out.properties.subject = subject
-    out.properties.description = f"Prepared by {AUTHOR_NAME} | Instagram: {AUTHOR_INSTAGRAM} | Run ID: {RUN_ID}"
-    out.save(destination_path)
-    return out.sheetnames
+def safe_sheet_name(value, used=None):
+    s = re.sub(r'[\\/*?:\[\]]+', '_', clean_text(value)).strip(" '") or 'Sheet'
+    s = s[:31]
+    if used is None:
+        return s
+    base = s
+    n = 2
+    while s.upper() in used:
+        suffix = f'_{n}'
+        s = base[:31-len(suffix)] + suffix
+        n += 1
+    used.add(s.upper())
+    return s
 
-books_sheet_names = save_subset_workbook(
-    FULL_OUTPUT_FILE, BOOKS_OUTPUT_FILE, BOOKS_SHEETS,
-    f"Books of Accounts {DISPLAY_VERSION}",
-    "CA / Accountant Working Books of Accounts from Bank Statements"
-)
-technical_sheet_names = save_subset_workbook(
-    FULL_OUTPUT_FILE, TECHNICAL_OUTPUT_FILE, TECHNICAL_SHEETS,
-    f"Bank Audit Technical Trail {DISPLAY_VERSION}",
-    "Forensic / Technical Audit Trail and Source Traceability"
-)
 
-try:
-    os.remove(FULL_OUTPUT_FILE)
-except OSError:
-    pass
+def month_summary_for_group(grp):
+    g = grp.copy()
+    g = g[g['Date'].notna()].sort_values(['Date','Source Row'], kind='stable')
+    if g.empty:
+        return pd.DataFrame(columns=[
+            'Year-Month','Month','Transaction Count','Debit Count','Total Debit',
+            'Credit Count','Total Credit','Net Credit - Debit','Month End Available Balance'
+        ])
+    g['Year-Month'] = g['Date'].dt.to_period('M').astype(str)
+    rows=[]
+    for ym, m in g.groupby('Year-Month', sort=True):
+        m=m.sort_values(['Date','Source Row'], kind='stable')
+        bal=m['Balance'].dropna()
+        rows.append({
+            'Year-Month': ym,
+            'Month': pd.Period(ym, freq='M').strftime('%B %Y'),
+            'Transaction Count': len(m),
+            'Debit Count': int(m['Direction'].eq('DEBIT').sum()),
+            'Total Debit': float(m['Debit'].fillna(0).sum()),
+            'Credit Count': int(m['Direction'].eq('CREDIT').sum()),
+            'Total Credit': float(m['Credit'].fillna(0).sum()),
+            'Net Credit - Debit': float(m['Credit'].fillna(0).sum()-m['Debit'].fillna(0).sum()),
+            'Month End Available Balance': float(bal.iloc[-1]) if not bal.empty else np.nan,
+        })
+    return pd.DataFrame(rows)
 
-logger.info("SUCCESS Books workbook: %s", BOOKS_OUTPUT_FILE)
-logger.info("SUCCESS Technical workbook: %s", TECHNICAL_OUTPUT_FILE)
-print("SUCCESS")
-print("Books Output    :", BOOKS_OUTPUT_FILE)
-print("Technical Output:", TECHNICAL_OUTPUT_FILE)
-print("Books Sheets    :", len(books_sheet_names))
-print("Technical Sheets:", len(technical_sheet_names))
-print("=" * 82)
+
+def build_interbank_matches(tx):
+    """One-to-one candidate matching across different source statements.
+
+    Strongest evidence first:
+      1) exact amount + exact same nonblank UTR/reference across debit/credit
+      2) exact amount + same date
+      3) exact amount + date within 1 day and transfer-like narration
+    Nothing is deleted or auto-posted. These are review candidates only.
+    """
+    t=tx.copy()
+    t=t[t['Date'].notna() & t['Transaction Amount'].notna() & t['Direction'].isin(['DEBIT','CREDIT'])].copy()
+    t['AmtKey']=t['Transaction Amount'].round(ROUND_DECIMALS)
+    t['UTRKey']=t['UTR / Reference'].fillna('').astype(str).str.strip().str.upper()
+    deb=t[t['Direction'].eq('DEBIT')].copy()
+    cre=t[t['Direction'].eq('CREDIT')].copy()
+    used_d=set(); used_c=set(); matches=[]
+
+    def transfer_like(s):
+        return bool(re.search(r'\b(?:NEFT|RTGS|IMPS|INFT|TRANSFER|TRF|OWN|SELF|FUND|UPI)\b', clean_text(s), re.I))
+
+    candidates=[]
+    credit_by_amount={k:v for k,v in cre.groupby('AmtKey')}
+    for di,d in deb.iterrows():
+        cg=credit_by_amount.get(d['AmtKey'])
+        if cg is None:
+            continue
+        for ci,c in cg.iterrows():
+            if clean_text(d['Source File']) == clean_text(c['Source File']):
+                continue
+            daydiff=abs((pd.Timestamp(c['Date'])-pd.Timestamp(d['Date'])).days)
+            same_utr=bool(d['UTRKey']) and d['UTRKey']==c['UTRKey']
+            same_date=daydiff==0
+            transfer_hint=transfer_like(d.get('Narration')) or transfer_like(c.get('Narration'))
+            if same_utr:
+                score=100; basis='EXACT AMOUNT + SAME UTR/REFERENCE'
+            elif same_date:
+                score=80; basis='EXACT AMOUNT + SAME DATE'
+            elif daydiff<=1 and transfer_hint:
+                score=60; basis='EXACT AMOUNT + DATE WITHIN 1 DAY + TRANSFER NARRATION'
+            else:
+                continue
+            candidates.append((score,-daydiff,di,ci,basis,daydiff))
+
+    # Highest-confidence one-to-one matching only.
+    candidates.sort(reverse=True)
+    for score, negdiff, di, ci, basis, daydiff in candidates:
+        if di in used_d or ci in used_c:
+            continue
+        used_d.add(di); used_c.add(ci)
+        d=deb.loc[di]; c=cre.loc[ci]
+        matches.append({
+            'Match Status': 'CANDIDATE - VERIFY',
+            'Confidence': 'HIGH' if score>=100 else ('MEDIUM' if score>=80 else 'REVIEW'),
+            'Match Basis': basis,
+            'Amount': float(d['Transaction Amount']),
+            'Debit Date': d['Date'],
+            'Debit Bank': d.get('Bank Name',''),
+            'Debit Account': d.get('Account Number',''),
+            'Debit UTR / Ref': d.get('UTR / Reference',''),
+            'Debit Narration': d.get('Narration',''),
+            'Debit Source File': d.get('Source File',''),
+            'Credit Date': c['Date'],
+            'Credit Bank': c.get('Bank Name',''),
+            'Credit Account': c.get('Account Number',''),
+            'Credit UTR / Ref': c.get('UTR / Reference',''),
+            'Credit Narration': c.get('Narration',''),
+            'Credit Source File': c.get('Source File',''),
+            'Date Difference Days': daydiff,
+        })
+    return pd.DataFrame(matches)
+
+
+interbank_matches = build_interbank_matches(transactions)
+
+# Map raw captures to source file. raw_data_sheets contains the actual raw DataFrames
+# produced by read_excel_csv()/PDF table extraction before standardization.
+raw_by_source = {}
+for rec in raw_data_index_records:
+    source = rec.get('Source File','')
+    raw_name = rec.get('Raw Sheet','')
+    part = rec.get('Source Part','')
+    if raw_name in raw_data_sheets:
+        raw_by_source.setdefault(source, []).append((part, raw_name, raw_data_sheets[raw_name]))
+
+# If config.yaml from an older run disabled raw preservation, warn clearly.
+if not PRESERVE_RAW_DATA:
+    logger.warning('preserve_raw_data is FALSE in config.yaml. REAL RAW sheets cannot be created. Set preserve_raw_data: true.')
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+HEADER_FILL_SIMPLE = PatternFill('solid', fgColor='1F4E78')
+SUB_FILL_SIMPLE = PatternFill('solid', fgColor='D9EAF7')
+WARN_FILL_SIMPLE = PatternFill('solid', fgColor='FFF2CC')
+WHITE_BOLD_SIMPLE = Font(color='FFFFFF', bold=True)
+BOLD_SIMPLE = Font(bold=True)
+THIN_SIMPLE = Side(style='thin', color='D9D9D9')
+BORDER_SIMPLE = Border(left=THIN_SIMPLE,right=THIN_SIMPLE,top=THIN_SIMPLE,bottom=THIN_SIMPLE)
+MONEY_FMT_SIMPLE = '₹#,##0.00;[Red](₹#,##0.00);-'
+
+
+def _safe(v):
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    if isinstance(v,pd.Timestamp):
+        return v.to_pydatetime()
+    if isinstance(v,np.generic):
+        return v.item()
+    return v
+
+
+def add_df_sheet(wb,name,df,money_cols=(),date_cols=(),highlight_review=False):
+    used={x.upper() for x in wb.sheetnames}
+    name=safe_sheet_name(name,used)
+    ws=wb.create_sheet(name)
+    if df is None or df.empty:
+        ws['A1']='No data'
+        return ws
+    cols=list(df.columns)
+    for c,col in enumerate(cols,1):
+        cell=ws.cell(1,c,col)
+        cell.fill=HEADER_FILL_SIMPLE; cell.font=WHITE_BOLD_SIMPLE
+        cell.alignment=Alignment(horizontal='center',vertical='center')
+        cell.border=BORDER_SIMPLE
+    for r,row in enumerate(df.itertuples(index=False,name=None),2):
+        for c,val in enumerate(row,1):
+            cell=ws.cell(r,c,_safe(val)); cell.border=BORDER_SIMPLE
+            if cols[c-1] in money_cols and isinstance(cell.value,(int,float)):
+                cell.number_format=MONEY_FMT_SIMPLE
+            if cols[c-1] in date_cols and cell.value is not None:
+                cell.number_format='dd-mm-yyyy'
+        if highlight_review and 'Match Status' in cols:
+            for cell in ws[r]: cell.fill=WARN_FILL_SIMPLE
+    ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
+    for idx,col in enumerate(cols,1):
+        vals=[str(col)] + [str(x) for x in df[col].head(150).fillna('').tolist()]
+        width=min(max(max(len(x) for x in vals)+2,10),45)
+        ws.column_dimensions[get_column_letter(idx)].width=width
+    return ws
+
+
+def add_raw_sheet(wb,name,raw_df):
+    """Write the raw source matrix exactly: no artificial DataFrame header row."""
+    used={x.upper() for x in wb.sheetnames}
+    ws=wb.create_sheet(safe_sheet_name(name,used))
+    if raw_df is None or raw_df.empty:
+        ws['A1']='No raw data captured'
+        return ws
+    for r_idx,row in enumerate(raw_df.itertuples(index=False,name=None),1):
+        for c_idx,val in enumerate(row,1):
+            ws.cell(r_idx,c_idx,_safe(val))
+    ws.freeze_panes='A1'
+    # Conservative widths; raw layout should remain readable, not reformatted into a new statement.
+    max_cols=min(raw_df.shape[1],80)
+    for c_idx in range(1,max_cols+1):
+        sample=[]
+        for v in raw_df.iloc[:120,c_idx-1].tolist():
+            sample.append('' if v is None else str(v))
+        width=min(max([len(x) for x in sample]+[8])+2,42)
+        ws.column_dimensions[get_column_letter(c_idx)].width=width
+    return ws
+
+
+generated_files=[]
+for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna=False,sort=False),1):
+    grp=grp.sort_values(['Date','Source Row'],kind='stable',na_position='last').copy()
+    first=grp.iloc[0]
+    bank_name=clean_text(first.get('Bank Name')) or 'UNKNOWN_BANK'
+    account_no=clean_text(first.get('Account Number'))
+    account_last4=clean_text(first.get('Account Last 4'))
+    if not account_last4 and account_no:
+        account_last4=re.sub(r'\D','',account_no)[-4:]
+
+    file_stub=f"{seq:02d}_{safe_file_component(bank_name,35)}"
+    if account_last4:
+        file_stub += f"_{safe_file_component(account_last4,8)}"
+    out_path=os.path.join(BANK_OUTPUT_DIR,file_stub+'.xlsx')
+
+    wb=Workbook(); wb.remove(wb.active)
+
+    # COVER
+    cover_rows=pd.DataFrame([
+        ['Bank',bank_name],
+        ['Account Number',account_no],
+        ['Source File',source_file],
+        ['Transactions',len(grp)],
+        ['Total Debit',float(grp['Debit'].fillna(0).sum())],
+        ['Total Credit',float(grp['Credit'].fillna(0).sum())],
+        ['Net Credit - Debit',float(grp['Credit'].fillna(0).sum()-grp['Debit'].fillna(0).sum())],
+        ['First Date',grp['Date'].dropna().min() if grp['Date'].notna().any() else pd.NaT],
+        ['Last Date',grp['Date'].dropna().max() if grp['Date'].notna().any() else pd.NaT],
+        ['Author',AUTHOR_NAME],
+        ['Instagram',AUTHOR_INSTAGRAM],
+    ],columns=['Metric','Value'])
+    add_df_sheet(wb,'COVER',cover_rows)
+
+    # MONTH-WISE — exactly the requested view for this bank/source only.
+    monthly=month_summary_for_group(grp)
+    add_df_sheet(wb,'MONTHLY_SUMMARY',monthly,
+                 money_cols=('Total Debit','Total Credit','Net Credit - Debit','Month End Available Balance'))
+
+    # EASY STATEMENT — clean normalized statement for this source only.
+    easy_cols=[c for c in [
+        'Date','Customer Name','UTR / Reference','Narration','Debit','Credit','Balance',
+        'Direction','Transaction Amount','Transaction Type','Possible Duplicate','Review Status',
+        'Source Part','Source Row'
+    ] if c in grp.columns]
+    add_df_sheet(wb,'EASY_STATEMENT',grp[easy_cols],
+                 money_cols=('Debit','Credit','Balance','Transaction Amount'),date_cols=('Date',))
+
+    # AUDIT CONTROL for this source only.
+    recon=bank_reconciliation[bank_reconciliation['Source File'].astype(str).eq(str(source_file))].copy() if 'Source File' in bank_reconciliation.columns else pd.DataFrame()
+    add_df_sheet(wb,'RECONCILIATION',recon,
+                 money_cols=('Derived Opening Balance','Total Debit','Total Credit','Expected Closing Balance','Actual Closing Balance','Difference'),
+                 date_cols=('First Date','Last Date'))
+
+    # INTERBANK candidate matches involving this source only.
+    if interbank_matches.empty:
+        source_inter=interbank_matches
+    else:
+        source_inter=interbank_matches[
+            interbank_matches['Debit Source File'].astype(str).eq(str(source_file)) |
+            interbank_matches['Credit Source File'].astype(str).eq(str(source_file))
+        ].copy()
+    add_df_sheet(wb,'INTERBANK_MATCHES',source_inter,
+                 money_cols=('Amount',),date_cols=('Debit Date','Credit Date'),highlight_review=True)
+
+    # REAL RAW DATA — every raw sheet/table belonging to this exact source file.
+    raws=raw_by_source.get(source_file,[])
+    if raws:
+        for raw_no,(part,raw_name,raw_df) in enumerate(raws,1):
+            part_label=safe_file_component(part,16) or f'PART_{raw_no:02d}'
+            add_raw_sheet(wb,f'REAL_RAW_{raw_no:02d}_{part_label}',raw_df)
+    else:
+        ws=wb.create_sheet('REAL_RAW_NOT_CAPTURED')
+        ws['A1']='Raw data was not captured for this run.'
+        ws['A2']='Ensure config.yaml contains: preserve_raw_data: true'
+
+    wb.properties.creator=AUTHOR_NAME
+    wb.properties.lastModifiedBy=AUTHOR_NAME
+    wb.properties.title=f'{bank_name} Bank Statement Report {DISPLAY_VERSION}'
+    wb.properties.subject='Bank-wise raw statement, monthly summary, easy statement and interbank candidate review'
+    wb.properties.description=f'Prepared by {AUTHOR_NAME} | {AUTHOR_INSTAGRAM} | Source: {source_file}'
+    wb.save(out_path)
+    generated_files.append(out_path)
+    logger.info('BANK FILE CREATED: %s',out_path)
+
+print('')
+print('='*82)
+print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.3 FIXED')
+print('='*82)
+print('Output Folder :',BANK_OUTPUT_DIR)
+print('Bank Files    :',len(generated_files))
+print('Transactions  :',f'{len(transactions):,}')
+print('Interbank Candidates:',f'{len(interbank_matches):,}')
+print('')
+for p in generated_files:
+    print(' -',os.path.basename(p))
+print('')
+print('Every bank/source workbook contains:')
+print('  COVER | MONTHLY_SUMMARY | EASY_STATEMENT | RECONCILIATION | INTERBANK_MATCHES | REAL_RAW_*')
+print('')
+print('INTERBANK_MATCHES are CANDIDATES ONLY and must be verified from the actual bank statements.')
+print('Author:',AUTHOR_NAME,'|',AUTHOR_INSTAGRAM)
+print('='*82)
