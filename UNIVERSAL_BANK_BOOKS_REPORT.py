@@ -86,8 +86,8 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V8_5_2_AUDIT_MODES_CHARGES_HARDENED"
-DISPLAY_VERSION = "V8.5.2 AUDIT MODES + CHARGES — HARDENED"
+VERSION = "V8_5_3_AUDIT_CONTROLLED_RECON_HARDENED"
+DISPLAY_VERSION = "V8.5.3 AUDIT-CONTROLLED RECON-HARDENED FIXED"
 
 VALIDATED_BANK_FORMATS = [
     "Axis Bank",
@@ -110,7 +110,7 @@ VALIDATED_BANK_FORMATS = [
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_5_2_AUDIT_MODES_CHARGES_HARDENED.xlsx")
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V8_5_3_AUDIT_CONTROLLED_RECON_HARDENED.xlsx")
 BOOKS_OUTPUT_FILE = FULL_OUTPUT_FILE
 TECHNICAL_OUTPUT_FILE = FULL_OUTPUT_FILE
 OUTPUT_FILE = FULL_OUTPUT_FILE
@@ -915,6 +915,26 @@ def parse_number(value):
         return np.nan
 
 
+def parse_balance_number(value):
+    """Parse a running balance while preserving explicit DR/CR sign evidence."""
+    if value is None:
+        return np.nan
+    raw = clean_text(value)
+    if not raw:
+        return np.nan
+
+    dr_suffix = re.search(r"\bDR\s*$", raw, flags=re.I) is not None
+    cr_suffix = re.search(r"\bCR\s*$", raw, flags=re.I) is not None
+    parsed = parse_number(raw)
+    if pd.isna(parsed):
+        return np.nan
+    if dr_suffix:
+        return round(-abs(float(parsed)), ROUND_DECIMALS)
+    if cr_suffix:
+        return round(abs(float(parsed)), ROUND_DECIMALS)
+    return parsed
+
+
 MONEY_TOKEN_RE = re.compile(
     r"(?<![\w])"
     r"(?:\d{1,3}(?:,\d{2,3})+|\d+)"
@@ -1307,7 +1327,7 @@ def standardize_generic_table(table):
         if credit_col else np.nan
     )
     out["Balance"] = (
-        table[balance_col].apply(parse_number)
+        table[balance_col].apply(parse_balance_number)
         if balance_col else np.nan
     )
 
@@ -2236,15 +2256,20 @@ def add_v851_audit_columns(df):
     g["Charge Type"] = g["Narration"].map(classify_charge_type_v851)
     g["Is Charge / Fee"] = g["Charge Type"].ne("").map({True: "YES", False: "NO"})
 
-    # Source-backed net charge: debit is a charge; credit is a reversal/refund.
-    # This prevents charge reversals from inflating "Total Actual Charges / Fees".
-    g["Charge Amount"] = 0.0
+    # Source-backed charge accounting. Keep gross debit, reversal credit, and net
+    # separately so a CA can trace both sides of a reversal. No rate/fee is inferred.
     charge_mask = g["Charge Type"].ne("")
     debit_amount = pd.to_numeric(g["Debit"], errors="coerce").fillna(0).abs()
     credit_amount = pd.to_numeric(g["Credit"], errors="coerce").fillna(0).abs()
-    g.loc[charge_mask, "Charge Amount"] = (
-        debit_amount.loc[charge_mask] - credit_amount.loc[charge_mask]
-    )
+
+    g["Gross Charge Debit"] = 0.0
+    g["Charge Reversal Credit"] = 0.0
+    g.loc[charge_mask, "Gross Charge Debit"] = debit_amount.loc[charge_mask]
+    g.loc[charge_mask, "Charge Reversal Credit"] = credit_amount.loc[charge_mask]
+    g["Net Charge Amount"] = g["Gross Charge Debit"] - g["Charge Reversal Credit"]
+
+    # Backward-compatible reporting alias used by older sheets/functions.
+    g["Charge Amount"] = g["Net Charge Amount"]
 
     g["Bank Charges / Fees"] = 0.0
     mask = g["Charge Type"].eq("BANK CHARGES / FEES")
@@ -2290,7 +2315,8 @@ def charges_summary_v851(grp):
     x = g[g["Charge Type"].ne("")].copy()
     if x.empty:
         return pd.DataFrame(columns=[
-            "Charge Type", "Transaction Count", "Net Charge Amount",
+            "Charge Type", "Transaction Count", "Gross Charge Debit",
+            "Charge Reversal Credit", "Net Charge Amount",
             "Total Debit Charges", "Total Credit/Reversal", "First Date", "Last Date"
         ])
     rows = []
@@ -2298,7 +2324,9 @@ def charges_summary_v851(grp):
         rows.append({
             "Charge Type": charge_type,
             "Transaction Count": len(c),
-            "Net Charge Amount": float(c["Charge Amount"].fillna(0).sum()),
+            "Gross Charge Debit": float(c["Gross Charge Debit"].fillna(0).sum()),
+            "Charge Reversal Credit": float(c["Charge Reversal Credit"].fillna(0).sum()),
+            "Net Charge Amount": float(c["Net Charge Amount"].fillna(0).sum()),
             "Total Debit Charges": float(c["Debit"].fillna(0).sum()),
             "Total Credit/Reversal": float(c["Credit"].fillna(0).sum()),
             "First Date": c["Date"].dropna().min() if c["Date"].notna().any() else pd.NaT,
@@ -2312,7 +2340,8 @@ def charge_ledger_v851(grp):
     x = g[g["Charge Type"].ne("")].copy()
     cols = [c for c in [
         "Date","Customer Name","UTR / Reference","Narration",
-        "Payment Mode","Charge Type","Charge Amount",
+        "Payment Mode","Charge Type","Gross Charge Debit","Charge Reversal Credit",
+        "Net Charge Amount","Charge Amount",
         "Bank Charges / Fees","GST / Tax Charges","Bill Payment Fees",
         "Debit","Credit","Balance","Direction",
         "Source Part","Source Row","Review Status"
@@ -2397,6 +2426,219 @@ def add_format_diagnostic(source_file, source_part, status, sample_text="", head
     })
 
 
+def reconcile_account_group(grp):
+    """Perform strict source-backed running-balance reconciliation.
+
+    Aggregate opening/closing arithmetic alone can pass by coincidence when
+    balance rows are sparse or offsetting errors net to zero. ``OK`` therefore
+    requires complete running-balance coverage and every adjacent movement to
+    reconcile to the current transaction.
+    """
+    work = grp.copy()
+    if work.empty:
+        return {
+            "Derived Opening Balance": np.nan,
+            "Total Debit": 0.0,
+            "Total Credit": 0.0,
+            "Expected Closing Balance": np.nan,
+            "Actual Closing Balance": np.nan,
+            "Difference": np.nan,
+            "Balance Rows": 0,
+            "Transaction Rows": 0,
+            "Missing Balance Rows": 0,
+            "Invalid Direction Rows": 0,
+            "Sequential Checks": 0,
+            "Sequential Mismatches": 0,
+            "Max Sequential Difference": np.nan,
+            "Balance Coverage": 0.0,
+            "Evidence Status": "NO TRANSACTIONS",
+            "Status": "BALANCE NOT AVAILABLE",
+        }
+
+    work["_ORIGINAL_ORDER"] = np.arange(len(work))
+    work["_SORT_PAGE"] = pd.to_numeric(work.get("Source Page", np.nan), errors="coerce")
+    work["_SORT_ROW"] = pd.to_numeric(work.get("Source Row", np.nan), errors="coerce")
+    work = work.sort_values(
+        ["Date", "_SORT_PAGE", "_SORT_ROW", "_ORIGINAL_ORDER"],
+        na_position="last",
+        kind="stable",
+    ).reset_index(drop=True)
+
+    debit = pd.to_numeric(work["Debit"], errors="coerce")
+    credit = pd.to_numeric(work["Credit"], errors="coerce")
+    balance = pd.to_numeric(work["Balance"], errors="coerce")
+    eps = 10 ** (-(ROUND_DECIMALS + 1))
+    has_debit = debit.notna() & debit.abs().gt(eps)
+    has_credit = credit.notna() & credit.abs().gt(eps)
+    valid_direction = has_debit ^ has_credit
+
+    transaction_rows = len(work)
+    balance_rows = int(balance.notna().sum())
+    missing_balance_rows = int(balance.isna().sum())
+    invalid_direction_rows = int((~valid_direction).sum())
+    balance_coverage = balance_rows / transaction_rows if transaction_rows else 0.0
+
+    debit_total = float(debit.fillna(0).sum())
+    credit_total = float(credit.fillna(0).sum())
+
+    first_balance = balance.iloc[0] if transaction_rows else np.nan
+    last_balance = balance.iloc[-1] if transaction_rows else np.nan
+    first_has_balance = pd.notna(first_balance)
+    last_has_balance = pd.notna(last_balance)
+
+    opening = np.nan
+    closing = float(last_balance) if last_has_balance else np.nan
+    if first_has_balance and bool(valid_direction.iloc[0]):
+        opening = (
+            float(first_balance)
+            + (float(debit.iloc[0]) if has_debit.iloc[0] else 0.0)
+            - (float(credit.iloc[0]) if has_credit.iloc[0] else 0.0)
+        )
+
+    expected_closing = (
+        opening + credit_total - debit_total
+        if pd.notna(opening)
+        else np.nan
+    )
+    aggregate_diff = (
+        closing - expected_closing
+        if pd.notna(closing) and pd.notna(expected_closing)
+        else np.nan
+    )
+
+    sequential_diffs = []
+    sequential_mismatches = 0
+    if transaction_rows >= 2 and missing_balance_rows == 0:
+        for pos in range(1, transaction_rows):
+            if not bool(valid_direction.iloc[pos]):
+                sequential_mismatches += 1
+                continue
+            amount = (
+                float(debit.iloc[pos])
+                if has_debit.iloc[pos]
+                else float(credit.iloc[pos])
+            )
+            expected_current = (
+                float(balance.iloc[pos - 1])
+                - (float(debit.iloc[pos]) if has_debit.iloc[pos] else 0.0)
+                + (float(credit.iloc[pos]) if has_credit.iloc[pos] else 0.0)
+            )
+            movement_diff = float(balance.iloc[pos]) - expected_current
+            sequential_diffs.append(abs(movement_diff))
+            tolerance = max(0.02, abs(amount) * 0.000001)
+            if abs(movement_diff) > tolerance:
+                sequential_mismatches += 1
+
+    sequential_checks = len(sequential_diffs)
+    max_sequential_diff = max(sequential_diffs) if sequential_diffs else np.nan
+    aggregate_tolerance = max(
+        0.02,
+        max(abs(debit_total), abs(credit_total), 1.0) * 0.000001,
+    )
+    aggregate_pass = (
+        pd.notna(aggregate_diff)
+        and abs(float(aggregate_diff)) <= aggregate_tolerance
+    )
+
+    account_key = clean_text(work.iloc[0].get("Account Key"))
+    account_key_status = bool(account_key)
+    complete_balance_evidence = (
+        transaction_rows >= 2
+        and missing_balance_rows == 0
+        and first_has_balance
+        and last_has_balance
+    )
+    sequential_pass = (
+        sequential_checks == transaction_rows - 1
+        and sequential_mismatches == 0
+    )
+
+    if not account_key_status:
+        evidence_status = "ACCOUNT KEY MISSING"
+    elif transaction_rows < 2:
+        evidence_status = "INSUFFICIENT BALANCE POINTS"
+    elif missing_balance_rows:
+        evidence_status = "INCOMPLETE RUNNING BALANCE"
+    elif invalid_direction_rows:
+        evidence_status = "INVALID DEBIT/CREDIT DIRECTION"
+    elif not sequential_pass:
+        evidence_status = "RUNNING BALANCE MISMATCH"
+    elif not aggregate_pass:
+        evidence_status = "OPENING/CLOSING MISMATCH"
+    else:
+        evidence_status = "COMPLETE RUNNING BALANCE"
+
+    status = (
+        "OK"
+        if (
+            account_key_status
+            and complete_balance_evidence
+            and invalid_direction_rows == 0
+            and sequential_pass
+            and aggregate_pass
+        )
+        else (
+            "BALANCE NOT AVAILABLE"
+            if transaction_rows == 0 or balance_rows == 0
+            else "CHECK"
+        )
+    )
+
+    return {
+        "Derived Opening Balance": opening,
+        "Total Debit": debit_total,
+        "Total Credit": credit_total,
+        "Expected Closing Balance": expected_closing,
+        "Actual Closing Balance": closing,
+        "Difference": aggregate_diff,
+        "Balance Rows": balance_rows,
+        "Transaction Rows": transaction_rows,
+        "Missing Balance Rows": missing_balance_rows,
+        "Invalid Direction Rows": invalid_direction_rows,
+        "Sequential Checks": sequential_checks,
+        "Sequential Mismatches": sequential_mismatches,
+        "Max Sequential Difference": max_sequential_diff,
+        "Balance Coverage": balance_coverage,
+        "Evidence Status": evidence_status,
+        "Status": status,
+    }
+
+def strict_source_audit_gate(
+    parser_status,
+    source_mapping_status,
+    traceability_status,
+    accounting_status,
+    imported_rows,
+    processed_rows,
+    row_control_output_rows,
+    mapping_transaction_rows,
+    actual_output_rows,
+    duplicate_source_coordinates,
+):
+    """Return VALIDATED only when every source-level audit invariant agrees."""
+    count_control_pass = (
+        actual_output_rows > 0
+        and imported_rows == actual_output_rows
+        and processed_rows == actual_output_rows
+        and row_control_output_rows == actual_output_rows
+        and mapping_transaction_rows == actual_output_rows
+    )
+    unique_trace_pass = duplicate_source_coordinates == 0
+    overall_pass = (
+        parser_status == "PASS"
+        and source_mapping_status == "PASS"
+        and traceability_status == "PASS"
+        and accounting_status == "PASS"
+        and count_control_pass
+        and unique_trace_pass
+    )
+    return {
+        "count_control": "PASS" if count_control_pass else "REVIEW",
+        "unique_trace": "PASS" if unique_trace_pass else "REVIEW",
+        "final_status": "VALIDATED" if overall_pass else "REVIEW",
+    }
+
+
 def run_internal_regression_tests():
     """Small dependency-free regression suite for critical parser invariants."""
     failures = []
@@ -2456,14 +2698,103 @@ def run_internal_regression_tests():
     charge_audit = add_v851_audit_columns(charge_sample)
     check(
         "charge reversal nets to zero",
-        float(charge_audit["Charge Amount"].sum()) == 0.0
-        and charge_audit.iloc[0]["Charge Amount"] == 25.0
-        and charge_audit.iloc[1]["Charge Amount"] == -25.0,
+        float(charge_audit["Net Charge Amount"].sum()) == 0.0
+        and charge_audit.iloc[0]["Net Charge Amount"] == 25.0
+        and charge_audit.iloc[1]["Net Charge Amount"] == -25.0,
+    )
+    check(
+        "gross charge debit retained",
+        float(charge_audit["Gross Charge Debit"].sum()) == 25.0,
+    )
+    check(
+        "charge reversal credit retained",
+        float(charge_audit["Charge Reversal Credit"].sum()) == 25.0,
+    )
+    check(
+        "legacy charge alias equals net",
+        charge_audit["Charge Amount"].equals(charge_audit["Net Charge Amount"]),
+    )
+
+    gate_ok = strict_source_audit_gate(
+        "PASS", "PASS", "PASS", "PASS",
+        2, 2, 2, 2, 2, 0,
+    )
+    check("audit gate validates matching controls", gate_ok["final_status"] == "VALIDATED")
+
+    gate_duplicate = strict_source_audit_gate(
+        "PASS", "PASS", "PASS", "PASS",
+        2, 2, 2, 2, 2, 1,
+    )
+    check("duplicate source coordinate forces review", gate_duplicate["final_status"] == "REVIEW")
+
+    gate_count = strict_source_audit_gate(
+        "PASS", "PASS", "PASS", "PASS",
+        3, 3, 3, 3, 2, 0,
+    )
+    check("row count mismatch forces review", gate_count["final_status"] == "REVIEW")
+
+    recon_good = pd.DataFrame({
+        "Date": pd.to_datetime(["2026-09-01", "2026-09-02", "2026-09-03"]),
+        "Debit": [np.nan, 200.0, np.nan],
+        "Credit": [100.0, np.nan, 50.0],
+        "Balance": [1100.0, 900.0, 950.0],
+        "Source Page": [1, 1, 1],
+        "Source Row": [1, 2, 3],
+        "Account Key": ["A1", "A1", "A1"],
+    })
+    recon_result = reconcile_account_group(recon_good)
+    check(
+        "complete running balance reconciles",
+        recon_result["Status"] == "OK"
+        and recon_result["Sequential Mismatches"] == 0
+        and recon_result["Evidence Status"] == "COMPLETE RUNNING BALANCE",
+    )
+
+    recon_sparse = recon_good.copy()
+    recon_sparse.loc[1, "Balance"] = np.nan
+    sparse_result = reconcile_account_group(recon_sparse)
+    check(
+        "sparse balances cannot falsely reconcile",
+        sparse_result["Status"] == "CHECK"
+        and sparse_result["Evidence Status"] == "INCOMPLETE RUNNING BALANCE",
+    )
+
+    recon_offset = recon_good.copy()
+    recon_offset.loc[1, "Balance"] = 950.0
+    recon_offset.loc[2, "Balance"] = 950.0
+    offset_result = reconcile_account_group(recon_offset)
+    check(
+        "offsetting movement errors cannot net to OK",
+        offset_result["Status"] == "CHECK"
+        and offset_result["Sequential Mismatches"] > 0,
+    )
+
+    recon_single = recon_good.iloc[[0]].copy()
+    single_result = reconcile_account_group(recon_single)
+    check(
+        "single balance point is insufficient evidence",
+        single_result["Status"] == "CHECK"
+        and single_result["Evidence Status"] == "INSUFFICIENT BALANCE POINTS",
+    )
+
+    check(
+        "DR balance sign preserved",
+        parse_balance_number("1,250.00 DR") == -1250.0
+        and parse_balance_number("1,250.00 CR") == 1250.0,
+    )
+
+    recon_both = recon_good.copy()
+    recon_both.loc[1, "Credit"] = 200.0
+    both_result = reconcile_account_group(recon_both)
+    check(
+        "both debit and credit cannot reconcile",
+        both_result["Status"] == "CHECK"
+        and both_result["Invalid Direction Rows"] == 1,
     )
 
     if failures:
         raise AssertionError("Regression test failure(s): " + ", ".join(failures))
-    print(f"SELF-TEST PASS: {14} critical checks")
+    print(f"SELF-TEST PASS: {26} critical checks")
     return True
 
 
@@ -2844,33 +3175,238 @@ else:
     )
     utr_check = utr_check[utr_check["Status"].ne("OK")].copy()
 
+
 # Reconciliation is per SOURCE FILE + ACCOUNT KEY to avoid mixing overlapping statements.
 recon_rows = []
-for (source_file, account_key), grp in transactions.groupby(["Source File", "Account Key"], dropna=False):
-    grp = grp.sort_values(["Date", "Source Page", "Source Row"], na_position="last")
-    with_bal = grp[grp["Balance"].notna()].copy()
-    opening = closing = np.nan
-    if not with_bal.empty:
-        first = with_bal.iloc[0]
-        opening = float(first["Balance"]) + (0.0 if pd.isna(first["Debit"]) else float(first["Debit"])) - (0.0 if pd.isna(first["Credit"]) else float(first["Credit"]))
-        closing = float(with_bal.iloc[-1]["Balance"])
-    debit_total = float(grp["Debit"].fillna(0).sum())
-    credit_total = float(grp["Credit"].fillna(0).sum())
-    expected = opening + credit_total - debit_total if pd.notna(opening) else np.nan
-    diff = closing - expected if pd.notna(closing) and pd.notna(expected) else np.nan
-    status = "OK" if pd.notna(diff) and abs(diff) <= 0.02 else ("CHECK" if pd.notna(diff) else "BALANCE NOT AVAILABLE")
+for (source_file, account_key), grp in transactions.groupby(
+    ["Source File", "Account Key"], dropna=False
+):
+    result = reconcile_account_group(grp)
     recon_rows.append({
-        "Source File": source_file, "Account Key": account_key,
+        "Source File": source_file,
+        "Account Key": account_key,
         "Bank Name": clean_text(grp.iloc[0].get("Bank Name")),
-        "First Date": grp["Date"].min(), "Last Date": grp["Date"].max(),
-        "Derived Opening Balance": opening, "Total Debit": debit_total,
-        "Total Credit": credit_total, "Expected Closing Balance": expected,
-        "Actual Closing Balance": closing, "Difference": diff, "Status": status,
+        "First Date": grp["Date"].min(),
+        "Last Date": grp["Date"].max(),
+        **result,
     })
 bank_reconciliation = pd.DataFrame(recon_rows)
 
 source_mapping = pd.DataFrame(source_map)
 pdf_page_recon = pd.concat(all_pdf_recon, ignore_index=True) if all_pdf_recon else pd.DataFrame()
+
+# ============================================================
+# V8.5.3 FIX — SOURCE AUDIT CONTROL
+# Defined before first use to prevent NameError at runtime.
+# ============================================================
+def build_source_audit_control(transactions, bank_reconciliation, source_mapping, row_control_seed):
+    """
+    V8.5.3 strict audit gate.
+
+    VALIDATED requires parser, source mapping, unique source traceability,
+    row-count agreement, and accounting/balance reconciliation to all pass.
+    Missing balance evidence, duplicate source coordinates, or stale/mismatched
+    control counts force REVIEW without preventing workbook generation.
+    """
+    rc = pd.DataFrame(row_control_seed) if row_control_seed else pd.DataFrame()
+    sm = source_mapping.copy() if source_mapping is not None else pd.DataFrame()
+    br = bank_reconciliation.copy() if bank_reconciliation is not None else pd.DataFrame()
+
+    rows = []
+    for source_file, g in transactions.groupby("Source File", dropna=False, sort=False):
+        g = g.copy()
+
+        debit_count = int(g["Debit"].notna().sum())
+        credit_count = int(g["Credit"].notna().sum())
+        debit_total = float(g["Debit"].fillna(0).sum())
+        credit_total = float(g["Credit"].fillna(0).sum())
+
+        if "Source Row" in g.columns:
+            source_row = g["Source Row"].fillna("").astype(str).str.strip()
+            missing_source_rows = int(source_row.eq("").sum())
+        else:
+            source_row = pd.Series([""] * len(g), index=g.index, dtype=str)
+            missing_source_rows = len(g)
+
+        if "Source Part" in g.columns:
+            source_part = g["Source Part"].fillna("").astype(str).str.strip()
+        else:
+            source_part = pd.Series([""] * len(g), index=g.index, dtype=str)
+
+        traceable = source_row.ne("")
+        coordinates = source_part[traceable] + "|" + source_row[traceable]
+        duplicate_source_coordinates = int(coordinates.duplicated(keep=False).sum())
+        traceability_status = (
+            "PASS"
+            if missing_source_rows == 0 and duplicate_source_coordinates == 0
+            else "REVIEW"
+        )
+
+        src_rc = (
+            rc[rc["Source File"].astype(str).eq(str(source_file))].copy()
+            if not rc.empty and "Source File" in rc.columns
+            else pd.DataFrame()
+        )
+        row_statuses = (
+            src_rc["Status"].fillna("").astype(str).str.upper().tolist()
+            if not src_rc.empty and "Status" in src_rc.columns
+            else []
+        )
+        parser_status = "PASS" if row_statuses and all(x == "PASS" for x in row_statuses) else "REVIEW"
+
+        def rc_sum(column):
+            if src_rc.empty or column not in src_rc.columns:
+                return 0
+            return int(pd.to_numeric(src_rc[column], errors="coerce").fillna(0).sum())
+
+        source_rows = rc_sum("Source Rows")
+        candidate_rows = rc_sum("Candidate Data Rows")
+        imported_rows = rc_sum("Imported Rows")
+        processed_rows = rc_sum("Processed Rows")
+        row_control_output_rows = rc_sum("Output Rows")
+        rejected_rows = rc_sum("Rejected Rows")
+
+        src_sm = (
+            sm[sm["Source File"].astype(str).eq(str(source_file))].copy()
+            if not sm.empty and "Source File" in sm.columns
+            else pd.DataFrame()
+        )
+        mapping_statuses = (
+            src_sm["Status"].fillna("").astype(str).str.upper().tolist()
+            if not src_sm.empty and "Status" in src_sm.columns
+            else []
+        )
+        source_mapping_status = (
+            "PASS"
+            if mapping_statuses and all(x == "RECOGNIZED" for x in mapping_statuses)
+            else "REVIEW"
+        )
+        mapping_transaction_rows = (
+            int(pd.to_numeric(src_sm["Transaction Count"], errors="coerce").fillna(0).sum())
+            if not src_sm.empty and "Transaction Count" in src_sm.columns
+            else 0
+        )
+
+        src_br = (
+            br[br["Source File"].astype(str).eq(str(source_file))].copy()
+            if not br.empty and "Source File" in br.columns
+            else pd.DataFrame()
+        )
+        balance_statuses = (
+            src_br["Status"].fillna("").astype(str).str.upper().tolist()
+            if not src_br.empty and "Status" in src_br.columns
+            else []
+        )
+        evidence_statuses = (
+            src_br["Evidence Status"].fillna("").astype(str).str.upper().tolist()
+            if not src_br.empty and "Evidence Status" in src_br.columns
+            else []
+        )
+        accounting_status = (
+            "PASS"
+            if (
+                balance_statuses
+                and all(x == "OK" for x in balance_statuses)
+                and evidence_statuses
+                and all(x == "COMPLETE RUNNING BALANCE" for x in evidence_statuses)
+            )
+            else "REVIEW"
+        )
+
+        max_abs_diff = np.nan
+        if not src_br.empty and "Difference" in src_br.columns:
+            diffs = pd.to_numeric(src_br["Difference"], errors="coerce").dropna().abs()
+            if not diffs.empty:
+                max_abs_diff = float(diffs.max())
+
+        gate = strict_source_audit_gate(
+            parser_status,
+            source_mapping_status,
+            traceability_status,
+            accounting_status,
+            imported_rows,
+            processed_rows,
+            row_control_output_rows,
+            mapping_transaction_rows,
+            len(g),
+            duplicate_source_coordinates,
+        )
+
+        rows.append({
+            "Source File": source_file,
+            "Bank Name": clean_text(g.iloc[0].get("Bank Name")) if not g.empty else "",
+            "Source Rows": source_rows,
+            "Candidate Data Rows": candidate_rows,
+            "Imported Transaction Rows": imported_rows,
+            "Processed Transaction Rows": processed_rows,
+            "Row-Control Output Rows": row_control_output_rows,
+            "Source-Mapping Transaction Rows": mapping_transaction_rows,
+            "Output Transaction Rows": len(g),
+            "Rejected / Non-Transaction Rows": rejected_rows,
+            "Debit Count": debit_count,
+            "Credit Count": credit_count,
+            "Total Debit": debit_total,
+            "Total Credit": credit_total,
+            "Missing Source Row Traceability": missing_source_rows,
+            "Duplicate Source Coordinates": duplicate_source_coordinates,
+            "Parser / Row Control": parser_status,
+            "Source Mapping Control": source_mapping_status,
+            "Source Traceability": traceability_status,
+            "Row Count Agreement": gate["count_control"],
+            "Unique Source Coordinates": gate["unique_trace"],
+            "Accounting Reconciliation": accounting_status,
+            "Balance Evidence": (
+                "PASS"
+                if not src_br.empty
+                and "Evidence Status" in src_br.columns
+                and src_br["Evidence Status"].fillna("").astype(str).eq(
+                    "COMPLETE RUNNING BALANCE"
+                ).all()
+                else "REVIEW"
+            ),
+            "Balance Coverage Min %": (
+                float(
+                    pd.to_numeric(
+                        src_br.get("Balance Coverage", pd.Series(dtype=float)),
+                        errors="coerce",
+                    ).dropna().min()
+                    * 100.0
+                )
+                if not src_br.empty
+                and "Balance Coverage" in src_br.columns
+                and not pd.to_numeric(
+                    src_br["Balance Coverage"], errors="coerce"
+                ).dropna().empty
+                else np.nan
+            ),
+            "Sequential Balance Mismatches": (
+                int(
+                    pd.to_numeric(
+                        src_br.get(
+                            "Sequential Mismatches",
+                            pd.Series(dtype=float),
+                        ),
+                        errors="coerce",
+                    ).fillna(0).sum()
+                )
+                if not src_br.empty
+                else 0
+            ),
+            "Max Abs Balance Difference": max_abs_diff,
+            "FINAL AUDIT STATUS": gate["final_status"],
+            "Audit Rule": (
+                "VALIDATED requires parser + mapping + unique traceability + "
+                "row-count agreement + accounting reconciliation PASS"
+            ),
+        })
+
+    return pd.DataFrame(rows)
+
+
+
+source_audit_control = build_source_audit_control(
+    transactions, bank_reconciliation, source_mapping, row_control_seed
+)
 
 # Compact data quality.
 data_quality = pd.DataFrame([
@@ -2883,6 +3419,8 @@ data_quality = pd.DataFrame([
     ["Missing UTR / Reference", int(transactions["UTR / Reference"].fillna("").astype(str).str.strip().eq("").sum())],
     ["UTR Duplicate / Conflict Groups", len(utr_check)],
     ["Reconciliation CHECK", int(bank_reconciliation["Status"].eq("CHECK").sum()) if not bank_reconciliation.empty else 0],
+    ["Audit VALIDATED Sources", int(source_audit_control["FINAL AUDIT STATUS"].eq("VALIDATED").sum()) if not source_audit_control.empty else 0],
+    ["Audit REVIEW Sources", int(source_audit_control["FINAL AUDIT STATUS"].eq("REVIEW").sum()) if not source_audit_control.empty else 0],
 ], columns=["Metric", "Count"])
 
 total_debit = float(transactions["Debit"].fillna(0).sum())
@@ -2912,8 +3450,18 @@ cover = pd.DataFrame([
 #   * INTERBANK_MATCHES contains candidate cross-bank debit/credit pairs only.
 #     It does not invent or automatically confirm an internal transfer.
 
-BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_5_1_AUDIT_MODES_CHARGES")
+BANK_OUTPUT_DIR = os.path.join(BASE_DIR, "BANK_WISE_REPORTS_V8_5_3_AUDIT_CONTROLLED_RECON_HARDENED")
 os.makedirs(BANK_OUTPUT_DIR, exist_ok=True)
+
+
+
+def audit_status_for_source(source_audit_control, source_file):
+    if source_audit_control is None or source_audit_control.empty:
+        return 'REVIEW'
+    x = source_audit_control[source_audit_control['Source File'].astype(str).eq(str(source_file))]
+    if x.empty:
+        return 'REVIEW'
+    return clean_text(x.iloc[0].get('FINAL AUDIT STATUS')) or 'REVIEW'
 
 
 def safe_file_component(value, max_len=70):
@@ -3372,6 +3920,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
         ['Transactions',len(grp)],
         ['Identified Customers',int(grp['Customer Name'].fillna('').astype(str).str.strip().replace('',np.nan).nunique())],
         ['Unidentified Customer Rows',int(grp['Customer Name'].fillna('').astype(str).str.strip().eq('').sum())],
+        ['AUDIT STATUS',audit_status_for_source(source_audit_control, source_file)],
         ['Bill Payment Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('BILL PAYMENT').sum())],
         ['NEFT Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('NEFT').sum())],
         ['IMPS Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('IMPS').sum())],
@@ -3379,7 +3928,9 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
         ['RTGS Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('RTGS').sum())],
         ['Cash Deposit Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('CASH DEPOSIT').sum())],
         ['Cash Withdrawal Transactions',int(add_v851_audit_columns(grp)['Payment Mode'].eq('CASH WITHDRAWAL').sum())],
-        ['Total Actual Charges / Fees',float(add_v851_audit_columns(grp)['Charge Amount'].fillna(0).sum())],
+        ['Gross Charge Debit',float(add_v851_audit_columns(grp)['Gross Charge Debit'].fillna(0).sum())],
+        ['Charge Reversal Credit',float(add_v851_audit_columns(grp)['Charge Reversal Credit'].fillna(0).sum())],
+        ['Net Actual Charges / Fees',float(add_v851_audit_columns(grp)['Net Charge Amount'].fillna(0).sum())],
         ['Total Debit',float(grp['Debit'].fillna(0).sum())],
         ['Total Credit',float(grp['Credit'].fillna(0).sum())],
         ['Net Credit - Debit',float(grp['Credit'].fillna(0).sum()-grp['Debit'].fillna(0).sum())],
@@ -3389,6 +3940,15 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
         ['Instagram',AUTHOR_INSTAGRAM],
     ],columns=['Metric','Value'])
     add_df_sheet(wb,'COVER',cover_rows)
+
+    # V8.5.3 — STRICT SOURCE AUDIT GATE
+    source_control = source_audit_control[
+        source_audit_control['Source File'].astype(str).eq(str(source_file))
+    ].copy() if not source_audit_control.empty else pd.DataFrame()
+    add_df_sheet(
+        wb,'SOURCE_AUDIT_CONTROL',source_control,
+        money_cols=('Total Debit','Total Credit','Max Abs Balance Difference')
+    )
 
     # MONTH-WISE — exactly the requested view for this bank/source only.
     monthly=month_summary_for_group(grp)
@@ -3436,7 +3996,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     charges_summary = charges_summary_v851(grp)
     add_df_sheet(
         wb,'CHARGES_SUMMARY',charges_summary,
-        money_cols=('Net Charge Amount','Total Debit Charges','Total Credit/Reversal'),
+        money_cols=('Gross Charge Debit','Charge Reversal Credit','Net Charge Amount','Total Debit Charges','Total Credit/Reversal'),
         date_cols=('First Date','Last Date'),
         highlight_charges=True
     )
@@ -3444,7 +4004,8 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     charge_ledger = charge_ledger_v851(grp)
     add_df_sheet(
         wb,'CHARGES_LEDGER',charge_ledger,
-        money_cols=('Charge Amount','Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees',
+        money_cols=('Gross Charge Debit','Charge Reversal Credit','Net Charge Amount','Charge Amount',
+                    'Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees',
                     'Debit','Credit','Balance'),
         date_cols=('Date',),
         highlight_charges=True
@@ -3455,6 +4016,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     easy_cols=[c for c in [
         'Date','Customer Name','UTR / Reference','Narration',
         'Payment Mode','Charge Type','Is Charge / Fee',
+        'Gross Charge Debit','Charge Reversal Credit','Net Charge Amount',
         'Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees','Charge Amount',
         'Debit','Credit','Balance','Direction','Transaction Amount',
         'Transaction Type','Possible Duplicate','Review Status',
@@ -3462,7 +4024,8 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     ] if c in grp.columns]
     add_df_sheet(
         wb,'EASY_STATEMENT',grp[easy_cols],
-        money_cols=('Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees','Charge Amount',
+        money_cols=('Gross Charge Debit','Charge Reversal Credit','Net Charge Amount',
+                    'Bank Charges / Fees','GST / Tax Charges','Bill Payment Fees','Charge Amount',
                     'Debit','Credit','Balance','Transaction Amount'),
         date_cols=('Date',),
         highlight_modes=True,
@@ -3500,7 +4063,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
     wb.properties.creator=AUTHOR_NAME
     wb.properties.lastModifiedBy=AUTHOR_NAME
     wb.properties.title=f'{bank_name} Bank Statement Report {DISPLAY_VERSION}'
-    wb.properties.subject='Bank-wise customer summary, customer monthly debit-credit, customer ledger, raw statement and audit controls'
+    wb.properties.subject='Audit-controlled bank report with mandatory source reconciliation, customer analysis, charge controls and raw traceability'
     wb.properties.description=f'Prepared by {AUTHOR_NAME} | {AUTHOR_INSTAGRAM} | Source: {source_file}'
     wb.save(out_path)
     generated_files.append(out_path)
@@ -3508,7 +4071,7 @@ for seq,(source_file,grp) in enumerate(transactions.groupby('Source File',dropna
 
 print('')
 print('='*82)
-print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.5.1 AUDIT MODES + CHARGES')
+print('SUCCESS — BANK-WISE SEPARATE REPORTS V8.5.3 AUDIT-CONTROLLED')
 print('='*82)
 print('Output Folder :',BANK_OUTPUT_DIR)
 print('Bank Files    :',len(generated_files))
@@ -3519,7 +4082,9 @@ for p in generated_files:
     print(' -',os.path.basename(p))
 print('')
 print('Every bank/source workbook contains:')
-print('  COVER | MONTHLY_SUMMARY | CUSTOMER_WISE_SUMMARY | CUSTOMER_MONTHLY | CUSTOMER_LEDGER | CUSTOMER_CONTROL | MODE_SUMMARY | CHARGES_SUMMARY | CHARGES_LEDGER | EASY_STATEMENT | RECONCILIATION | INTERBANK_MATCHES | REAL_RAW_*')
+print('  COVER | SOURCE_AUDIT_CONTROL | MONTHLY_SUMMARY | CUSTOMER_WISE_SUMMARY | CUSTOMER_MONTHLY | CUSTOMER_LEDGER | CUSTOMER_CONTROL | MODE_SUMMARY | CHARGES_SUMMARY | CHARGES_LEDGER | EASY_STATEMENT | RECONCILIATION | INTERBANK_MATCHES | REAL_RAW_*')
+print('Audit VALIDATED:', int(source_audit_control['FINAL AUDIT STATUS'].eq('VALIDATED').sum()) if not source_audit_control.empty else 0)
+print('Audit REVIEW   :', int(source_audit_control['FINAL AUDIT STATUS'].eq('REVIEW').sum()) if not source_audit_control.empty else 0)
 print('')
 print('INTERBANK_MATCHES are CANDIDATES ONLY and must be verified from the actual bank statements.')
 print('Author:',AUTHOR_NAME,'|',AUTHOR_INSTAGRAM)
