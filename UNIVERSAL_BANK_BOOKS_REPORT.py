@@ -1,13 +1,13 @@
 """
 ============================================================
-UNIVERSAL BANK BOOKS REPORT V7.1
+UNIVERSAL BANK BOOKS REPORT V7.3
 ============================================================
 Author   : Mohamed Nayeem
 Copyright: © Mohamed Nayeem — All Rights Reserved
 Instagram: @mohamednayeem7
 ============================================================
 
-V7.1 — INDIA-WIDE BANK FORMAT COVERAGE + DIAGNOSTICS + AUDIT CONTROLS
+V7.3 — BOOKS OF ACCOUNTS + SEPARATE FORENSIC/AUDIT TRAIL
 ----------------------------
 Supports ALL major Indian bank statement formats:
   SBI, HDFC, ICICI, Axis, Kotak Mahindra, PNB, BOB,
@@ -18,7 +18,9 @@ Supports ALL major Indian bank statement formats:
 
 File types:  .xlsx  .xls  .csv  .pdf  .html  .htm  .txt
 
-Output:  UNIVERSAL_BANK_BOOKS_REPORT_V7_1.xlsx
+Outputs:
+  BOOKS_OF_ACCOUNTS_V7_3.xlsx
+  BANK_AUDIT_TECHNICAL_V7_3.xlsx
 
 Sheets:
   COVER_REPORT
@@ -61,7 +63,7 @@ Optional OCR:
   python -m pip install pytesseract pdf2image pillow
 
 RUN
-  python UNIVERSAL_BANK_BOOKS_REPORT_V7.py
+  python UNIVERSAL_BANK_BOOKS_REPORT_V7_3.py
 """
 
 import os
@@ -74,7 +76,7 @@ import traceback
 from datetime import datetime
 import numpy as np
 import pandas as pd
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -84,17 +86,17 @@ from openpyxl.utils import get_column_letter
 AUTHOR_NAME = "Mohamed Nayeem"
 AUTHOR_COPYRIGHT = "© Mohamed Nayeem — All Rights Reserved"
 AUTHOR_INSTAGRAM = "@mohamednayeem7"
-VERSION = "V7_1"
-DISPLAY_VERSION = "V7.1"
+VERSION = "V7_3"
+DISPLAY_VERSION = "V7.3"
 
 # ============================================================
 # CONFIG
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_FILE = os.path.join(
-    BASE_DIR,
-    "UNIVERSAL_BANK_BOOKS_REPORT_V7_1.xlsx",
-)
+FULL_OUTPUT_FILE = os.path.join(BASE_DIR, "UNIVERSAL_BANK_BOOKS_REPORT_V7_3_FULL_TEMP.xlsx")
+BOOKS_OUTPUT_FILE = os.path.join(BASE_DIR, "BOOKS_OF_ACCOUNTS_V7_3.xlsx")
+TECHNICAL_OUTPUT_FILE = os.path.join(BASE_DIR, "BANK_AUDIT_TECHNICAL_V7_3.xlsx")
+OUTPUT_FILE = FULL_OUTPUT_FILE
 PATTERNS = (
     "*.xlsx", "*.XLSX",
     "*.xls",  "*.XLS",
@@ -110,7 +112,7 @@ input_files = sorted({
     p for p in input_files
     if os.path.abspath(p).lower() != os.path.abspath(OUTPUT_FILE).lower()
     and not os.path.basename(p).startswith("~$")
-    and not re.match(r"(?i)^UNIVERSAL_BANK_BOOKS_REPORT_V[0-9_.-]+\.xlsx$", os.path.basename(p))
+    and not re.match(r"(?i)^(?:UNIVERSAL_BANK_BOOKS_REPORT_V[0-9_.-]+|BOOKS_OF_ACCOUNTS_V[0-9_.-]+|BANK_AUDIT_TECHNICAL_V[0-9_.-]+)\.xlsx$", os.path.basename(p))
     and not re.match(r"(?i)^audit_log_\d{8}_\d{6}\.txt$", os.path.basename(p))
 })
 if not input_files:
@@ -216,7 +218,7 @@ BANK_SIGNATURES = {
     ],
 }
 
-# V7.1 — extended India-wide bank fingerprints. Generic parsing still works
+# V7.2 — extended India-wide bank fingerprints. Generic parsing still works
 # for an unknown/co-operative bank when standard statement fields are present.
 BANK_SIGNATURES.update({
     "IDFC FIRST Bank": ["idfc first", "idfcfirst", "transaction date", "balance"],
@@ -251,20 +253,136 @@ BANK_SIGNATURES.update({
     "Fino Payments Bank": ["fino payments bank", "fino bank", "transaction date"],
     "Jio Payments Bank": ["jio payments bank", "jio bank", "transaction date"],
     "NSDL Payments Bank": ["nsdl payments bank", "nsdl bank", "transaction date"],
+    # Foreign banks operating in India / India banking operations
+    "Standard Chartered Bank": ["standard chartered", "scb", "transaction date", "account statement"],
+    "HSBC": ["hsbc", "hongkong and shanghai banking corporation", "account statement"],
+    "Citibank N.A.": ["citibank", "citi bank", "citibank n.a", "account statement"],
+    "Deutsche Bank": ["deutsche bank", "transaction details", "account statement"],
+    "DBS Bank India": ["dbs bank india", "dbs bank", "digibank", "account statement"],
+    "Bank of America": ["bank of america", "bofa", "account statement"],
+    "Barclays Bank": ["barclays bank", "barclays", "account statement"],
+    "BNP Paribas": ["bnp paribas", "account statement"],
+    "JPMorgan Chase Bank": ["jpmorgan chase", "jp morgan", "jpmorgan", "account statement"],
+    "MUFG Bank": ["mufg bank", "bank of tokyo-mitsubishi ufj", "account statement"],
+    "Mizuho Bank": ["mizuho bank", "account statement"],
+    "Sumitomo Mitsui Banking Corporation": ["sumitomo mitsui banking corporation", "smbc", "account statement"],
+    "Bank of Bahrain & Kuwait": ["bank of bahrain & kuwait", "bank of bahrain and kuwait", "bbk", "account statement"],
+    "Doha Bank": ["doha bank", "account statement"],
+    "Emirates NBD": ["emirates nbd", "enbd", "account statement"],
+    "First Abu Dhabi Bank": ["first abu dhabi bank", "fab bank", "account statement"],
+    "Mashreq Bank": ["mashreq bank", "mashreq", "account statement"],
+    "Qatar National Bank": ["qatar national bank", "qnb", "account statement"],
+    "Société Générale": ["société générale", "societe generale", "account statement"],
+    "Bank of China": ["bank of china", "account statement"],
+    "Industrial and Commercial Bank of China": ["industrial and commercial bank of china", "icbc", "account statement"],
+    "KEB Hana Bank": ["keb hana bank", "hana bank", "account statement"],
+    "Shinhan Bank": ["shinhan bank", "account statement"],
+    "Woori Bank": ["woori bank", "account statement"],
 })
+
+# Official V7.2 catalogue used for reporting/category tagging.
+BANK_CATALOG = {
+    # Public Sector Banks
+    "State Bank of India (SBI)": "PUBLIC SECTOR BANK",
+    "Bank of Baroda (BOB)": "PUBLIC SECTOR BANK",
+    "Bank of India": "PUBLIC SECTOR BANK",
+    "Bank of Maharashtra": "PUBLIC SECTOR BANK",
+    "Canara Bank": "PUBLIC SECTOR BANK",
+    "Central Bank of India": "PUBLIC SECTOR BANK",
+    "Indian Bank": "PUBLIC SECTOR BANK",
+    "Indian Overseas Bank": "PUBLIC SECTOR BANK",
+    "Punjab National Bank (PNB)": "PUBLIC SECTOR BANK",
+    "Punjab & Sind Bank": "PUBLIC SECTOR BANK",
+    "UCO Bank": "PUBLIC SECTOR BANK",
+    "Union Bank of India": "PUBLIC SECTOR BANK",
+    # Private Sector Banks
+    "Axis Bank": "PRIVATE SECTOR BANK", "Bandhan Bank": "PRIVATE SECTOR BANK",
+    "CSB Bank": "PRIVATE SECTOR BANK", "City Union Bank": "PRIVATE SECTOR BANK",
+    "DCB Bank": "PRIVATE SECTOR BANK", "Dhanlaxmi Bank": "PRIVATE SECTOR BANK",
+    "Federal Bank": "PRIVATE SECTOR BANK", "HDFC Bank": "PRIVATE SECTOR BANK",
+    "ICICI Bank": "PRIVATE SECTOR BANK", "IDBI Bank": "PRIVATE SECTOR BANK",
+    "IDFC FIRST Bank": "PRIVATE SECTOR BANK", "IndusInd Bank": "PRIVATE SECTOR BANK",
+    "Jammu & Kashmir Bank": "PRIVATE SECTOR BANK", "Karnataka Bank": "PRIVATE SECTOR BANK",
+    "Karur Vysya Bank": "PRIVATE SECTOR BANK", "Kotak Mahindra Bank": "PRIVATE SECTOR BANK",
+    "Nainital Bank": "PRIVATE SECTOR BANK", "RBL Bank": "PRIVATE SECTOR BANK",
+    "South Indian Bank": "PRIVATE SECTOR BANK", "Tamilnad Mercantile Bank": "PRIVATE SECTOR BANK",
+    "Yes Bank": "PRIVATE SECTOR BANK",
+    # Small Finance Banks
+    "AU Small Finance Bank": "SMALL FINANCE BANK", "Capital Small Finance Bank": "SMALL FINANCE BANK",
+    "Equitas Small Finance Bank": "SMALL FINANCE BANK", "ESAF Small Finance Bank": "SMALL FINANCE BANK",
+    "Jana Small Finance Bank": "SMALL FINANCE BANK", "Shivalik Small Finance Bank": "SMALL FINANCE BANK",
+    "Suryoday Small Finance Bank": "SMALL FINANCE BANK", "Ujjivan Small Finance Bank": "SMALL FINANCE BANK",
+    "Unity Small Finance Bank": "SMALL FINANCE BANK", "Utkarsh Small Finance Bank": "SMALL FINANCE BANK",
+    # Payments Banks
+    "Airtel Payments Bank": "PAYMENTS BANK", "India Post Payments Bank": "PAYMENTS BANK",
+    "Fino Payments Bank": "PAYMENTS BANK", "Jio Payments Bank": "PAYMENTS BANK",
+    "NSDL Payments Bank": "PAYMENTS BANK",
+    # Foreign Banks
+    "Standard Chartered Bank": "FOREIGN BANK", "HSBC": "FOREIGN BANK", "Citibank N.A.": "FOREIGN BANK",
+    "Deutsche Bank": "FOREIGN BANK", "DBS Bank India": "FOREIGN BANK", "Bank of America": "FOREIGN BANK",
+    "Barclays Bank": "FOREIGN BANK", "BNP Paribas": "FOREIGN BANK", "JPMorgan Chase Bank": "FOREIGN BANK",
+    "MUFG Bank": "FOREIGN BANK", "Mizuho Bank": "FOREIGN BANK",
+    "Sumitomo Mitsui Banking Corporation": "FOREIGN BANK", "Bank of Bahrain & Kuwait": "FOREIGN BANK",
+    "Doha Bank": "FOREIGN BANK", "Emirates NBD": "FOREIGN BANK", "First Abu Dhabi Bank": "FOREIGN BANK",
+    "Mashreq Bank": "FOREIGN BANK", "Qatar National Bank": "FOREIGN BANK", "Société Générale": "FOREIGN BANK",
+    "Bank of China": "FOREIGN BANK", "Industrial and Commercial Bank of China": "FOREIGN BANK",
+    "KEB Hana Bank": "FOREIGN BANK", "Shinhan Bank": "FOREIGN BANK", "Woori Bank": "FOREIGN BANK",
+}
+
+def bank_category(bank_name):
+    name = clean_text(bank_name)
+    if name in BANK_CATALOG:
+        return BANK_CATALOG[name]
+    if name == "Unknown Bank":
+        return "UNKNOWN / OTHER BANK"
+    return "OTHER / CO-OPERATIVE / LEGACY BANK"
 
 
 def detect_bank_from_text(text):
-    """Best-effort bank detection from first-page PDF text."""
+    """Best-effort bank detection using identity terms only.
+
+    V7.2 deliberately ignores generic headers such as 'transaction date',
+    'particulars', 'debit', 'credit' and 'balance' for bank identity. This
+    prevents a generic statement from being falsely labelled as a specific bank.
+    """
     t = clean_text(text).lower()
-    best_bank = "Unknown Bank"
-    best_score = 0
+    if not t:
+        return "Unknown Bank"
+
+    generic_terms = {
+        "transaction date", "tran date", "txn date", "value date",
+        "particulars", "narration", "description", "transaction details",
+        "debit", "credit", "balance", "withdrawals", "deposits",
+        "withdrawal amt", "deposit amt", "closing balance", "ref no",
+        "cheque no", "cheque number", "account statement",
+    }
+    candidates = []
     for bank, keywords in BANK_SIGNATURES.items():
-        score = sum(1 for kw in keywords if kw in t)
-        if score > best_score:
-            best_score = score
-            best_bank = bank
-    return best_bank if best_score >= 2 else "Unknown Bank"
+        best = 0
+        best_term = ""
+        for kw in keywords:
+            term = clean_text(kw).lower()
+            if not term or term in generic_terms:
+                continue
+            # Very short abbreviations can create false matches inside words.
+            if len(term) <= 4 and term.isalnum():
+                matched = re.search(r"\b" + re.escape(term) + r"\b", t) is not None
+            else:
+                matched = term in t
+            if matched:
+                # Prefer longer/more distinctive identity phrases.
+                score = len(term.replace(" ", ""))
+                if "bank" in term:
+                    score += 10
+                if score > best:
+                    best = score
+                    best_term = term
+        if best:
+            candidates.append((best, len(best_term), bank))
+    if not candidates:
+        return "Unknown Bank"
+    candidates.sort(reverse=True)
+    return candidates[0][2]
 
 
 # ============================================================
@@ -341,7 +459,7 @@ ALIASES = {
 }
 
 
-# V7.1 — extra header variants seen across Indian retail/current-account exports.
+# V7.2 — extra header variants seen across Indian retail/current-account exports.
 _EXTRA_ALIASES = {
     "date": ["txn dt", "transaction dt.", "posting dt", "date & time", "transaction date & time"],
     "narration": ["transaction remarks", "transaction narration", "description/narration", "particulars / narration", "txn particulars / narration"],
@@ -651,7 +769,7 @@ def parse_date_flexible(text):
 
 
 def match_date_at_line_start(line):
-    """Return transaction date at line start; V7.1 tolerates a leading serial number."""
+    """Return transaction date at line start; V7.2 tolerates a leading serial number."""
     text = str(line or "").strip()
     for pat in DATE_LINE_PATTERNS:
         m = pat.match(text)
@@ -774,7 +892,7 @@ def is_generic_bank_header(values):
         return True
     if "date" in hits and "amount" in hits and "type" in hits:
         return True
-    # V7.1: many co-operative/digital bank exports keep DR/CR inside the
+    # V7.2: many co-operative/digital bank exports keep DR/CR inside the
     # Amount cells and therefore have no separate Type column.
     if "date" in hits and "amount" in hits and ("balance" in hits or "narration" in hits):
         return True
@@ -1190,7 +1308,7 @@ def read_excel_csv(path):
 # UNIVERSAL PDF TEXT PARSER  (works for ALL banks)
 # ============================================================
 def is_bank_statement_pdf(text):
-    """Broad bank-statement fingerprint; generic unknown-bank layouts are allowed in V7.1."""
+    """Broad bank-statement fingerprint; generic unknown-bank layouts are allowed in V7.2."""
     t = clean_text(text).lower()
     bank_keywords = [
         "bank", "statement", "account", "balance", "transaction", "debit", "credit",
@@ -1615,6 +1733,30 @@ def detect_bank_from_filename(filename):
         "Karur Vysya Bank": ["karur vysya", "kvb"],
         "Indian Overseas Bank": ["iob", "indian overseas"],
         "Bank of India": ["bank of india", "boi"],
+        "Standard Chartered Bank": ["standard chartered", "scb"],
+        "HSBC": ["hsbc"],
+        "Citibank N.A.": ["citibank", "citi"],
+        "Deutsche Bank": ["deutsche"],
+        "DBS Bank India": ["dbs", "digibank"],
+        "Bank of America": ["bank of america", "bofa"],
+        "Barclays Bank": ["barclays"],
+        "BNP Paribas": ["bnp paribas"],
+        "JPMorgan Chase Bank": ["jpmorgan", "jp morgan"],
+        "MUFG Bank": ["mufg", "tokyo mitsubishi"],
+        "Mizuho Bank": ["mizuho"],
+        "Sumitomo Mitsui Banking Corporation": ["sumitomo mitsui", "smbc"],
+        "Bank of Bahrain & Kuwait": ["bahrain kuwait", "bbk"],
+        "Doha Bank": ["doha bank"],
+        "Emirates NBD": ["emirates nbd", "enbd"],
+        "First Abu Dhabi Bank": ["first abu dhabi", "fab bank"],
+        "Mashreq Bank": ["mashreq"],
+        "Qatar National Bank": ["qatar national", "qnb"],
+        "Société Générale": ["societe generale", "société générale"],
+        "Bank of China": ["bank of china"],
+        "Industrial and Commercial Bank of China": ["industrial and commercial bank of china", "icbc"],
+        "KEB Hana Bank": ["keb hana", "hana bank"],
+        "Shinhan Bank": ["shinhan"],
+        "Woori Bank": ["woori"],
     }
     aliases.update({
         "IDFC FIRST Bank": ["idfc first", "idfcfirst"],
@@ -1689,6 +1831,7 @@ def extract_account_profile_from_text(text_value, filename=""):
     return {
         "Source File": os.path.basename(filename),
         "Bank Name": bank,
+        "Bank Category": bank_category(bank),
         "Account Holder": holder,
         "Account Number": account_number,
         "Account Last 4": masked,
@@ -1738,9 +1881,9 @@ def classify_transaction_type(narration):
         ("GST / TAX", ["GST", "CGST", "SGST", "IGST", "TAX"]),
         ("INTEREST", ["INTEREST", "INT.PD", "INT PAID", "INT RECEIVED"]),
         ("REFUND / REVERSAL", ["REFUND", "REVERSAL", "REVERSED", "RETURN"]),
-        ("INTERNAL TRANSFER", ["INFT", "INTERNAL TRANSFER", "OWN ACCOUNT", "SELF TRANSFER"]),
+        ("INTERNAL TRANSFER", ["INTERNAL TRANSFER", "OWN ACCOUNT", "SELF TRANSFER"]),
+        ("BANK TRANSFER", ["INFT", "TRF", "TRANSFER"]),
         ("NACH / ECS", ["NACH", "ECS", "ACH"]),
-        ("BANK TRANSFER", ["TRF", "TRANSFER"]),
     ]
     for category, keywords in rules:
         if any(k in s for k in keywords):
@@ -1825,7 +1968,7 @@ def add_format_diagnostic(source_file, source_part, status, sample_text="", head
 
 
 # ============================================================
-# LOAD SOURCES — V7.1 AUDIT / RAW / ROW-CONTROL
+# LOAD SOURCES — V7.2 AUDIT / RAW / ROW-CONTROL
 # ============================================================
 all_frames = []
 source_map = []
@@ -2074,7 +2217,7 @@ transactions["Possible Duplicate"] = np.where(
 account_profile = build_account_profiles(input_files)
 profile_lookup = account_profile.set_index("Source File").to_dict("index") if not account_profile.empty else {}
 
-for col in ["Bank Name", "Account Holder", "Account Number", "Account Last 4", "IFSC", "Account Key"]:
+for col in ["Bank Name", "Bank Category", "Account Holder", "Account Number", "Account Last 4", "IFSC", "Account Key"]:
     transactions[col] = transactions["Source File"].map(
         lambda f: profile_lookup.get(f, {}).get(col, "")
     )
@@ -2277,6 +2420,186 @@ data_quality["Percent_of_Transactions"] = np.where(
     100.0,
     np.where(len(transactions) > 0, data_quality["Count"] / len(transactions) * 100.0, 0.0),
 )
+
+# ============================================================
+# V7.2 — BOOKS OF ACCOUNTS PREPARATION LAYER
+# ============================================================
+def suggested_counter_ledger(row):
+    """Conservative draft counter-ledger suggestion. Never overwrites source data."""
+    txn_type = clean_text(row.get("Transaction Type")).upper()
+    party = clean_text(row.get("Customer Name"))
+    direction = clean_text(row.get("Direction")).upper()
+    narration = clean_text(row.get("Narration")).upper()
+    if txn_type == "BANK CHARGES":
+        return "Bank Charges / Finance Cost Review"
+    if txn_type == "GST / TAX" or re.search(r"\b(?:GST|CGST|SGST|IGST|TDS|TAX)\b", narration):
+        return "Tax / GST Ledger Review"
+    if txn_type == "INTEREST":
+        return "Interest Income Review" if direction == "CREDIT" else "Interest Expense Review"
+    if txn_type in ("CASH DEPOSIT", "ATM WITHDRAWAL"):
+        return "Cash / Contra Review"
+    if txn_type == "INTERNAL TRANSFER":
+        if re.search(r"\b(?:OWN ACCOUNT|SELF TRANSFER|INTERNAL TRANSFER)\b", narration):
+            return "Own Bank / Contra Review"
+        return party if party else "UNCLASSIFIED COUNTER LEDGER"
+    if txn_type == "REFUND / REVERSAL":
+        return "Refund / Reversal Review"
+    if party:
+        return party
+    return "UNCLASSIFIED COUNTER LEDGER"
+
+
+def accounting_category(row):
+    txn_type = clean_text(row.get("Transaction Type")).upper()
+    direction = clean_text(row.get("Direction")).upper()
+    narration = clean_text(row.get("Narration")).upper()
+    if txn_type == "BANK CHARGES": return "BANK CHARGES / FINANCE COST"
+    if txn_type == "GST / TAX" or re.search(r"\b(?:GST|CGST|SGST|IGST|TDS|TAX)\b", narration): return "TAX / GST REVIEW"
+    if txn_type == "INTEREST": return "INTEREST INCOME" if direction == "CREDIT" else "INTEREST EXPENSE"
+    if txn_type in ("CASH DEPOSIT", "ATM WITHDRAWAL"): return "CASH / CONTRA"
+    if txn_type == "INTERNAL TRANSFER":
+        return "BANK / CONTRA" if re.search(r"\b(?:OWN ACCOUNT|SELF TRANSFER|INTERNAL TRANSFER)\b", narration) else ("PARTY RECEIPT" if direction == "CREDIT" else "PARTY PAYMENT")
+    if txn_type == "REFUND / REVERSAL": return "REFUND / REVERSAL"
+    if txn_type in ("UPI", "IMPS", "NEFT", "RTGS", "CHEQUE", "POS / CARD", "BANK TRANSFER", "NACH / ECS"):
+        return "PARTY RECEIPT" if direction == "CREDIT" else "PARTY PAYMENT"
+    return "UNCLASSIFIED / REVIEW"
+
+
+def voucher_type(row):
+    cat = accounting_category(row)
+    direction = clean_text(row.get("Direction")).upper()
+    if cat in ("CASH / CONTRA", "BANK / CONTRA"):
+        return "CONTRA"
+    if direction == "CREDIT":
+        return "RECEIPT"
+    if direction == "DEBIT":
+        return "PAYMENT"
+    return "JOURNAL / REVIEW"
+
+transactions["Accounting Category"] = transactions.apply(accounting_category, axis=1)
+transactions["Suggested Counter Ledger"] = transactions.apply(suggested_counter_ledger, axis=1)
+transactions["Voucher Type"] = transactions.apply(voucher_type, axis=1)
+transactions["Narration Status Flag"] = np.where(
+    transactions["Narration"].fillna("").astype(str).str.contains(
+        r"\b(?:REJECT|REJECTED|FAILED|FAILURE|DECLINED|CANCELLED|CANCELED|RETURNED|BOUNCED)\b",
+        case=False, regex=True, na=False
+    ),
+    "REVIEW - FAILURE/REJECTION WORD IN NARRATION",
+    "NORMAL",
+)
+transactions["Books Posting Status"] = np.where(
+    transactions["Review Status"].eq("OK")
+    & transactions["Suggested Counter Ledger"].ne("UNCLASSIFIED COUNTER LEDGER")
+    & transactions["Narration Status Flag"].eq("NORMAL"),
+    "DRAFT READY - VERIFY LEDGER",
+    "REVIEW BEFORE POSTING",
+)
+transactions["Bank Ledger"] = transactions.apply(
+    lambda r: f"{clean_text(r.get('Bank Name'))} A/c {clean_text(r.get('Account Last 4'))}".strip()
+    if clean_text(r.get("Bank Name")) else "Bank Account",
+    axis=1,
+)
+
+# Bank Book: statement credit = receipt/increase in Bank asset; statement debit = payment/decrease.
+bank_book = transactions[[
+    "Date", "Account Key", "Bank Name", "Bank Category", "Account Number", "Bank Ledger",
+    "Customer Name", "UTR / Reference", "Narration", "Transaction Type", "Voucher Type",
+    "Debit", "Credit", "Balance", "Transaction Amount", "Source File", "Source Part", "Source Page", "Source Row"
+]].copy()
+bank_book["Receipts (Bank Statement Credit)"] = bank_book["Credit"]
+bank_book["Payments (Bank Statement Debit)"] = bank_book["Debit"]
+bank_book = bank_book[[
+    "Date", "Account Key", "Bank Name", "Bank Category", "Account Number", "Bank Ledger",
+    "Customer Name", "UTR / Reference", "Narration", "Transaction Type", "Voucher Type",
+    "Receipts (Bank Statement Credit)", "Payments (Bank Statement Debit)", "Balance",
+    "Source File", "Source Part", "Source Page", "Source Row"
+]]
+
+# Draft double-entry posting register. Counter ledger remains a review field where not evidenced.
+ledger_posting_draft = transactions[[
+    "Date", "Voucher Type", "Bank Ledger", "Suggested Counter Ledger", "Accounting Category",
+    "Customer Name", "UTR / Reference", "Narration", "Direction", "Transaction Amount",
+    "Review Status", "Books Posting Status", "Source File", "Source Part", "Source Page", "Source Row"
+]].copy()
+ledger_posting_draft["Debit Ledger (Draft)"] = np.where(
+    transactions["Direction"].eq("CREDIT"), transactions["Bank Ledger"], transactions["Suggested Counter Ledger"]
+)
+ledger_posting_draft["Credit Ledger (Draft)"] = np.where(
+    transactions["Direction"].eq("DEBIT"), transactions["Bank Ledger"], transactions["Suggested Counter Ledger"]
+)
+ledger_posting_draft["Debit Amount (Draft)"] = transactions["Transaction Amount"]
+ledger_posting_draft["Credit Amount (Draft)"] = transactions["Transaction Amount"]
+ledger_posting_draft = ledger_posting_draft[[
+    "Date", "Voucher Type", "Debit Ledger (Draft)", "Debit Amount (Draft)",
+    "Credit Ledger (Draft)", "Credit Amount (Draft)", "Suggested Counter Ledger",
+    "Accounting Category", "Customer Name", "UTR / Reference", "Narration",
+    "Review Status", "Books Posting Status", "Source File", "Source Part", "Source Page", "Source Row"
+]]
+
+voucher_register = transactions[[
+    "Date", "Voucher Type", "Account Key", "Bank Ledger", "Customer Name", "Suggested Counter Ledger",
+    "UTR / Reference", "Narration", "Accounting Category", "Direction", "Transaction Amount",
+    "Review Status", "Books Posting Status", "Source File"
+]].copy()
+voucher_register.insert(0, "Voucher Draft No", [f"BNK-{i:08d}" for i in range(1, len(voucher_register)+1)])
+
+party_base = transactions[transactions["Customer Name"].fillna("").astype(str).str.strip().ne("")].copy()
+if party_base.empty:
+    party_ledger_summary = pd.DataFrame(columns=[
+        "Customer Name", "Receipt_Count", "Receipt_Total", "Payment_Count", "Payment_Total",
+        "Net_Receipt_Minus_Payment", "First_Date", "Last_Date", "Unique_UTRs"
+    ])
+else:
+    party_ledger_summary = party_base.groupby("Customer Name", dropna=False).agg(
+        Receipt_Count=("Credit", lambda s: int(s.notna().sum())),
+        Receipt_Total=("Credit", "sum"),
+        Payment_Count=("Debit", lambda s: int(s.notna().sum())),
+        Payment_Total=("Debit", "sum"),
+        First_Date=("Date", "min"), Last_Date=("Date", "max"),
+        Unique_UTRs=("UTR / Reference", nonblank_nunique),
+    ).reset_index()
+    party_ledger_summary["Net_Receipt_Minus_Payment"] = party_ledger_summary["Receipt_Total"].fillna(0)-party_ledger_summary["Payment_Total"].fillna(0)
+
+accounting_category_summary = transactions.groupby("Accounting Category", dropna=False).agg(
+    Transaction_Count=("Transaction Amount", "count"),
+    Debit_Count=("Debit", lambda s: int(s.notna().sum())), Debit_Total=("Debit", "sum"),
+    Credit_Count=("Credit", lambda s: int(s.notna().sum())), Credit_Total=("Credit", "sum"),
+).reset_index()
+accounting_category_summary["Net_Credit_Minus_Debit"] = accounting_category_summary["Credit_Total"].fillna(0)-accounting_category_summary["Debit_Total"].fillna(0)
+
+# Month key is needed by both books controls and general summaries.
+transactions["Month"] = transactions["Date"].dt.to_period("M").astype(str)
+
+suspense_review = transactions[
+    transactions["Suggested Counter Ledger"].eq("UNCLASSIFIED COUNTER LEDGER")
+    | transactions["Accounting Category"].eq("UNCLASSIFIED / REVIEW")
+    | transactions["Review Status"].ne("OK")
+    | transactions["Narration Status Flag"].ne("NORMAL")
+].copy()
+
+# V7.3 — Draft rows that passed parser/review controls. These are still DRAFT, not final ledger postings.
+posting_ready_draft = ledger_posting_draft[
+    ledger_posting_draft["Books Posting Status"].eq("DRAFT READY - VERIFY LEDGER")
+].copy()
+
+books_readiness = pd.DataFrame([
+    ["Total Bank Transactions", len(transactions)],
+    ["Draft Posting Ready - Verify Support", int(transactions["Books Posting Status"].eq("DRAFT READY - VERIFY LEDGER").sum())],
+    ["Review Before Posting", int(transactions["Books Posting Status"].eq("REVIEW BEFORE POSTING").sum())],
+    ["Suspense / Review Rows", len(suspense_review)],
+    ["Critical Parser Review", int(transactions["Review Status"].eq("CRITICAL REVIEW").sum())],
+    ["Possible Duplicate Rows", int(transactions["Possible Duplicate"].eq("YES").sum())],
+    ["Narration Failure/Rejection Review", int(transactions["Narration Status Flag"].ne("NORMAL").sum())],
+], columns=["Books Readiness Metric", "Count"])
+books_readiness["Percent"] = np.where(len(transactions) > 0, books_readiness["Count"] / len(transactions), 0.0)
+
+monthly_books_control = transactions.groupby(["Month", "Account Key"], dropna=False).agg(
+    Transaction_Count=("Transaction Amount", "count"),
+    Receipts=("Credit", "sum"), Payments=("Debit", "sum"),
+    Review_Count=("Review Status", lambda s: int(s.ne("OK").sum())),
+    Unclassified_Count=("Suggested Counter Ledger", lambda s: int(s.eq("UNCLASSIFIED COUNTER LEDGER").sum())),
+).reset_index()
+monthly_books_control["Net_Movement"] = monthly_books_control["Receipts"].fillna(0)-monthly_books_control["Payments"].fillna(0)
 
 # ============================================================
 # SUMMARIES
@@ -2591,6 +2914,10 @@ cover_rows = [
     ("Duplicate / Conflicting UTR Count", int(len(utr_duplicate_check))),
     ("Bank Reconciliation CHECK Count", int(bank_reconciliation["Status"].eq("CHECK").sum()) if not bank_reconciliation.empty else 0),
     ("Bank Charges / GST Related Rows", int(len(bank_charges_gst))),
+    ("Books Draft Ready Rows", int(transactions["Books Posting Status"].eq("DRAFT READY - VERIFY LEDGER").sum())),
+    ("Books Review Before Posting Rows", int(transactions["Books Posting Status"].eq("REVIEW BEFORE POSTING").sum())),
+    ("Unclassified Counter Ledger Rows", int(transactions["Suggested Counter Ledger"].eq("UNCLASSIFIED COUNTER LEDGER").sum())),
+    ("Failure/Rejection Narration Rows", int(transactions["Narration Status Flag"].ne("NORMAL").sum())),
     (
         "PDF Reconciliation CHECK Pages",
         int(pdf_page_recon["Status"].eq("CHECK").sum())
@@ -2629,11 +2956,12 @@ write_df(
 # TRANSACTION_REGISTER
 # ============================================================
 register_columns = [
-    "Date", "Bank Name", "Account Key", "Account Number",
+    "Date", "Bank Name", "Bank Category", "Account Key", "Account Number",
     "Customer Name", "UTR / Reference", "Narration",
-    "Transaction Type", "Debit", "Credit", "Balance", "Direction",
+    "Transaction Type", "Accounting Category", "Suggested Counter Ledger", "Voucher Type",
+    "Debit", "Credit", "Balance", "Direction",
     "Transaction Amount", "Balance Reconciliation Status", "Balance Reconciliation Difference",
-    "Confidence Score", "Review Status", "Review Reason",
+    "Confidence Score", "Review Status", "Review Reason", "Narration Status Flag", "Books Posting Status",
     "Customer Source", "UTR Source", "Possible Duplicate", "Parser", "Source File",
     "Source Part", "Source Page", "Source Row",
 ]
@@ -2645,6 +2973,83 @@ write_df_split(
     date_cols=("Date",),
 )
 
+
+# ============================================================
+# V7.2 — BANK_BOOK
+# ============================================================
+write_df_split(
+    wb, bank_book, "BANK_BOOK",
+    money_cols=("Receipts (Bank Statement Credit)", "Payments (Bank Statement Debit)", "Balance"),
+    date_cols=("Date",),
+)
+
+# ============================================================
+# V7.3 — BOOKS_READINESS
+write_df_split(wb, books_readiness, "BOOKS_READINESS", count_cols=("Count",))
+
+# V7.3 — POSTING_READY_DRAFT
+write_df_split(
+    wb, posting_ready_draft, "POSTING_READY_DRAFT",
+    money_cols=("Debit Amount (Draft)", "Credit Amount (Draft)"),
+    date_cols=("Date",),
+)
+
+# V7.2 — LEDGER_POSTING_DRAFT
+# ============================================================
+write_df_split(
+    wb, ledger_posting_draft, "LEDGER_POSTING_DRAFT",
+    money_cols=("Debit Amount (Draft)", "Credit Amount (Draft)"),
+    date_cols=("Date",),
+)
+
+# ============================================================
+# V7.2 — VOUCHER_REGISTER
+# ============================================================
+write_df_split(
+    wb, voucher_register, "VOUCHER_REGISTER",
+    money_cols=("Transaction Amount",), date_cols=("Date",),
+)
+
+# ============================================================
+# V7.2 — PARTY_LEDGER_SUMMARY
+# ============================================================
+write_df_split(
+    wb, party_ledger_summary, "PARTY_LEDGER_SUMMARY",
+    money_cols=("Receipt_Total", "Payment_Total", "Net_Receipt_Minus_Payment"),
+    date_cols=("First_Date", "Last_Date"),
+    count_cols=("Receipt_Count", "Payment_Count", "Unique_UTRs"),
+)
+
+# ============================================================
+# V7.2 — ACCOUNTING_CATEGORY_SUMMARY
+# ============================================================
+write_df_split(
+    wb, accounting_category_summary, "ACCOUNTING_CATEGORY_SUMMARY",
+    money_cols=("Debit_Total", "Credit_Total", "Net_Credit_Minus_Debit"),
+    count_cols=("Transaction_Count", "Debit_Count", "Credit_Count"),
+)
+
+# ============================================================
+# V7.2 — SUSPENSE_REVIEW
+# ============================================================
+suspense_cols = [c for c in [
+    "Date", "Bank Name", "Account Key", "Customer Name", "UTR / Reference", "Narration",
+    "Transaction Type", "Accounting Category", "Suggested Counter Ledger", "Debit", "Credit", "Balance",
+    "Review Status", "Review Reason", "Narration Status Flag", "Books Posting Status", "Source File", "Source Part", "Source Page", "Source Row"
+] if c in suspense_review.columns]
+write_df_split(
+    wb, suspense_review[suspense_cols], "SUSPENSE_REVIEW",
+    money_cols=("Debit", "Credit", "Balance"), date_cols=("Date",),
+)
+
+# ============================================================
+# V7.2 — MONTHLY_BOOKS_CONTROL
+# ============================================================
+write_df_split(
+    wb, monthly_books_control, "MONTHLY_BOOKS_CONTROL",
+    money_cols=("Receipts", "Payments", "Net_Movement"),
+    count_cols=("Transaction_Count", "Review_Count", "Unclassified_Count"),
+)
 
 # ============================================================
 # REVIEW_REQUIRED
@@ -2909,19 +3314,26 @@ write_df_split(
 )
 
 # ============================================================
-# V7.1 — FORMAT_DIAGNOSTICS
+# V7.2 — FORMAT_DIAGNOSTICS
 # ============================================================
 format_diagnostics_df = pd.DataFrame(format_diagnostic_records) if format_diagnostic_records else pd.DataFrame(columns=[
     "Source File", "Source Part", "Status", "Detected Bank", "Header Hits", "Sample / First Content", "Note"
 ])
 write_df_split(wb, format_diagnostics_df, "FORMAT_DIAGNOSTICS")
 
-# V7.1 — BANK_SUPPORT_MATRIX
+# V7.2 — BANK_SUPPORT_MATRIX
 bank_support_matrix = pd.DataFrame([
-    {"Bank / Category": bank, "Detection": "BUILT-IN", "Parsing": "GENERIC + PDF TEXT/TABLE", "Notes": "Layout may still require review if scanned/protected/non-tabular."}
+    {
+        "Bank Name": bank,
+        "Bank Category": BANK_CATALOG.get(bank, "OTHER / LEGACY BANK"),
+        "Detection": "BUILT-IN",
+        "Parsing": "GENERIC + PDF TEXT/TABLE + BALANCE CONTROL",
+        "Books Preparation": "SUPPORTED - SUBJECT TO REVIEW CONTROLS",
+        "Notes": "Layout may still require review if scanned/protected/non-tabular."
+    }
     for bank in sorted(BANK_SIGNATURES.keys())
 ] + [
-    {"Bank / Category": "Other Indian bank / co-operative bank", "Detection": "GENERIC", "Parsing": "HEADER ALIAS + DATE/AMOUNT/BALANCE", "Notes": "Works when standard transaction fields are extractable; FORMAT_DIAGNOSTICS captures unsupported layouts."}
+    {"Bank Name": "Other Indian bank / co-operative bank", "Bank Category": "OTHER / CO-OPERATIVE", "Detection": "GENERIC", "Parsing": "HEADER ALIAS + DATE/AMOUNT/BALANCE", "Books Preparation": "SUPPORTED WHEN TRANSACTIONS ARE RELIABLY EXTRACTED", "Notes": "FORMAT_DIAGNOSTICS captures unsupported layouts."}
 ])
 write_df_split(wb, bank_support_matrix, "BANK_SUPPORT_MATRIX")
 
@@ -3007,14 +3419,14 @@ notes = [
         "transaction report.",
     ],
     [
-        "V7.1 India-wide Bank Support",
+        "V7.3 Complete India Bank Support",
         "Supports ALL major Indian banks: SBI, HDFC, ICICI, "
         "Axis, Kotak, PNB, BOB, Canara, Union, IDBI, Yes, "
         "IndusInd, Federal, RBL, Bandhan, AU Small Finance, "
         "and any bank producing standard tabular statements.",
     ],
     [
-        "V7.1 PDF Parser",
+        "V7.3 PDF Parser",
         "Universal PDF text parser handles all date formats "
         "(DD-MM-YYYY, DD/MM/YYYY, DD-MMM-YYYY, YYYY-MM-DD, "
         "etc.) and uses running balance movement to determine "
@@ -3077,7 +3489,7 @@ notes = [
         "XLSX, XLS, CSV, PDF, HTML/HTM and delimited TXT. Text-based PDFs are preferred; OCR is optional for scanned PDFs.",
     ],
     [
-        "V7.1 Config",
+        "V7.3 Config",
         "config.yaml is validated at startup. Custom aliases extend built-in aliases rather than replacing them.",
     ],
     [
@@ -3093,12 +3505,24 @@ notes = [
         "PG validation is disabled by default. Ordinary bank transactions are never automatically charged 0.8% + GST merely because rates exist in config.yaml.",
     ],
     [
-        "V7.1 Format Diagnostics",
+        "V7.3 Format Diagnostics",
         "Unknown or unusual layouts are recorded in FORMAT_DIAGNOSTICS rather than silently discarded. BANK_SUPPORT_MATRIX lists built-in bank fingerprints plus generic/co-operative-bank support.",
     ],
     [
         "Coverage Limitation",
-        "No software can guarantee every bank statement layout. Password-protected, corrupt, image-only or highly non-tabular statements may require OCR/manual review. V7.1 is designed for maximum Indian-bank coverage with audit-safe fallbacks.",
+        "No software can guarantee every bank statement layout. Password-protected, corrupt, image-only or highly non-tabular statements may require OCR/manual review. V7.3 is designed for maximum Indian-bank coverage with audit-safe fallbacks.",
+    ],
+    [
+        "V7.3 Books Preparation",
+        "Adds a clean Books workbook and a separate forensic/audit workbook. BOOKS_READINESS and POSTING_READY_DRAFT separate usable draft postings from suspense/review items. Draft ledger suggestions never replace source evidence and must be verified before accounting-system posting.",
+    ],
+    [
+        "Double Entry Logic",
+        "Bank-statement CREDIT is treated as an increase in the bank asset (Bank Ledger debit in the draft); bank-statement DEBIT is treated as a decrease in the bank asset (Bank Ledger credit in the draft). Counter ledgers are suggested conservatively and unclassified items are routed to review.",
+    ],
+    [
+        "Accounting Safety",
+        "Payment method (UPI/IMPS/NEFT/RTGS) is not automatically treated as income or expense. The code uses party/counter-ledger review and does not manufacture invoices, sales, purchases, GST eligibility, TDS treatment or expense purpose.",
     ],
     [
         "Generated On",
@@ -3142,15 +3566,85 @@ print(f"Author       : {AUTHOR_NAME}")
 print(f"Copyright    : {AUTHOR_COPYRIGHT}")
 print(f"Instagram    : {AUTHOR_INSTAGRAM}")
 print("")
-print("Saving:", OUTPUT_FILE)
+print("Preparing separate Books and Technical/Audit workbooks...")
 wb.properties.creator = AUTHOR_NAME
 wb.properties.lastModifiedBy = AUTHOR_NAME
 wb.properties.title = f"Universal Bank Books Report {DISPLAY_VERSION}"
 wb.properties.subject = "Bank Statement Books of Accounts / Audit Control Report"
 wb.properties.description = f"Prepared by {AUTHOR_NAME} | Instagram: {AUTHOR_INSTAGRAM} | Run ID: {RUN_ID}"
-logger.info("Saving workbook: %s", OUTPUT_FILE)
-wb.save(OUTPUT_FILE)
-logger.info("SUCCESS: %s", OUTPUT_FILE)
+logger.info("Saving temporary full workbook: %s", FULL_OUTPUT_FILE)
+wb.save(FULL_OUTPUT_FILE)
+
+BOOKS_SHEETS = [
+    "COVER_REPORT", "ACCOUNT_PROFILE", "BOOKS_READINESS", "BANK_BOOK",
+    "TRANSACTION_REGISTER", "VOUCHER_REGISTER", "LEDGER_POSTING_DRAFT",
+    "POSTING_READY_DRAFT", "PARTY_LEDGER_SUMMARY", "DATE_WISE_SUMMARY",
+    "MONTH_WISE_SUMMARY", "ACCOUNT_WISE_SUMMARY", "CUSTOMER_WISE_SUMMARY",
+    "CUSTOMER_DATE_WISE", "ACCOUNTING_CATEGORY_SUMMARY", "TRANSACTION_TYPE_SUMMARY",
+    "BANK_CHARGES_GST", "BANK_RECONCILIATION", "UTR_WISE_REGISTER",
+    "UTR_DUPLICATE_CHECK", "REVIEW_REQUIRED", "SUSPENSE_REVIEW",
+    "MONTHLY_BOOKS_CONTROL", "CONTROL_TOTALS", "DATA_QUALITY", "REPORT_NOTES"
+]
+TECHNICAL_SHEETS = [
+    "COVER_REPORT", "ACCOUNT_PROFILE", "TRANSACTION_REGISTER", "REVIEW_REQUIRED",
+    "UTR_WISE_REGISTER", "UTR_DUPLICATE_CHECK", "BANK_RECONCILIATION",
+    "PDF_PAGE_RECON", "DATA_QUALITY", "CONTROL_TOTALS", "SOURCE_MAPPING",
+    "ROW_COUNT_CONTROL", "SOURCE_RAW_INDEX", "PARSER_RECONCILIATION",
+    "FORMAT_DIAGNOSTICS", "BANK_SUPPORT_MATRIX", "EXCEPTIONS", "CONFIG_USED",
+    "AUDIT_LOG", "PG_GST_VALIDATION", "REFUND_CHARGEBACK_REVIEW", "REPORT_NOTES"
+]
+
+def save_subset_workbook(source_path, destination_path, keep_base_names, title, subject):
+    out = load_workbook(source_path)
+    keep = set(keep_base_names)
+    # Split RAW sheets and split INDEX sheets are retained for technical workbook.
+    for ws_name in list(out.sheetnames):
+        raw_or_split_technical = (
+            ws_name.startswith("RAW_") or
+            ws_name.startswith("SOURCE_RAW_INDEX") or
+            ws_name.startswith("ROW_COUNT_CONTROL") or
+            ws_name.startswith("PARSER_RECONCILIATION") or
+            ws_name.startswith("FORMAT_DIAGNOSTICS") or
+            ws_name.startswith("EXCEPTIONS") or
+            ws_name.startswith("AUDIT_LOG") or
+            ws_name.startswith("CONFIG_USED")
+        )
+        if destination_path == TECHNICAL_OUTPUT_FILE:
+            should_keep = ws_name in keep or raw_or_split_technical
+        else:
+            # write_df_split may suffix very large books sheets as _001, _002...
+            should_keep = ws_name in keep or any(ws_name.startswith(base + "_") for base in keep)
+        if not should_keep and len(out.sheetnames) > 1:
+            del out[ws_name]
+    out.properties.creator = AUTHOR_NAME
+    out.properties.lastModifiedBy = AUTHOR_NAME
+    out.properties.title = title
+    out.properties.subject = subject
+    out.properties.description = f"Prepared by {AUTHOR_NAME} | Instagram: {AUTHOR_INSTAGRAM} | Run ID: {RUN_ID}"
+    out.save(destination_path)
+    return out.sheetnames
+
+books_sheet_names = save_subset_workbook(
+    FULL_OUTPUT_FILE, BOOKS_OUTPUT_FILE, BOOKS_SHEETS,
+    f"Books of Accounts {DISPLAY_VERSION}",
+    "CA / Accountant Working Books of Accounts from Bank Statements"
+)
+technical_sheet_names = save_subset_workbook(
+    FULL_OUTPUT_FILE, TECHNICAL_OUTPUT_FILE, TECHNICAL_SHEETS,
+    f"Bank Audit Technical Trail {DISPLAY_VERSION}",
+    "Forensic / Technical Audit Trail and Source Traceability"
+)
+
+try:
+    os.remove(FULL_OUTPUT_FILE)
+except OSError:
+    pass
+
+logger.info("SUCCESS Books workbook: %s", BOOKS_OUTPUT_FILE)
+logger.info("SUCCESS Technical workbook: %s", TECHNICAL_OUTPUT_FILE)
 print("SUCCESS")
-print("Output:", OUTPUT_FILE)
+print("Books Output    :", BOOKS_OUTPUT_FILE)
+print("Technical Output:", TECHNICAL_OUTPUT_FILE)
+print("Books Sheets    :", len(books_sheet_names))
+print("Technical Sheets:", len(technical_sheet_names))
 print("=" * 82)
